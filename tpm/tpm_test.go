@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/google/go-tpm/tpm2"
-	"github.com/psanford/tpm-fido/internal/lencode"
+	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/internal/lencode"
 )
 
 // makeHandle builds a key handle in the same lencode framing that registerKey

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"io"
 	"log"
@@ -12,15 +13,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/psanford/tpm-fido/ctap2"
-	"github.com/psanford/tpm-fido/fidohid"
-	"github.com/psanford/tpm-fido/memory"
-	"github.com/psanford/tpm-fido/nativemsg"
-	"github.com/psanford/tpm-fido/tpm"
-	"github.com/psanford/tpm-fido/tray"
-	"github.com/psanford/tpm-fido/usbmon"
-	"github.com/psanford/tpm-fido/userpresence"
-	"github.com/psanford/tpm-fido/webauthn"
+	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/ctap2"
+	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/fidohid"
+	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/memory"
+	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/nativemsg"
+	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/tpm"
+	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/tray"
+	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/usbmon"
+	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/userpresence"
+	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/webauthn"
 )
 
 var (
@@ -133,7 +134,7 @@ func runDaemonHeadless(ctap2Handler *ctap2.Handler) {
 
 	log.Printf("Virtual FIDO2 HID device daemon started")
 
-	if err := dev.Run(ctx); err != nil && err != context.Canceled {
+	if err := dev.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatalf("Device error: %v", err)
 	}
 
@@ -175,7 +176,7 @@ func runDaemonWithTray(ctap2Handler *ctap2.Handler) {
 
 		go func() {
 			log.Printf("Virtual FIDO2 HID device started")
-			if err := d.Run(ctx); err != nil && err != context.Canceled {
+			if err := d.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				log.Printf("Device error: %v", err)
 			}
 			d.Close()

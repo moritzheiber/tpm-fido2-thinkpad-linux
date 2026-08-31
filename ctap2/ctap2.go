@@ -9,7 +9,7 @@ import (
 	"math/big"
 
 	"github.com/fxamacker/cbor/v2"
-	"github.com/psanford/tpm-fido/userpresence"
+	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/userpresence"
 )
 
 // Signer is the interface that the TPM or memory backend must implement

@@ -9,8 +9,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/psanford/tpm-fido/ctap2"
-	"github.com/psanford/tpm-fido/nativemsg"
+	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/ctap2"
+	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/nativemsg"
 )
 
 // hashPRFSalt hashes a PRF salt according to the WebAuthn PRF extension spec:

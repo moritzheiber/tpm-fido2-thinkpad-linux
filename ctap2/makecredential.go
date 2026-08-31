@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
-	"github.com/psanford/tpm-fido/attestation"
+	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/attestation"
 )
 
 // MakeCredential handles the authenticatorMakeCredential command

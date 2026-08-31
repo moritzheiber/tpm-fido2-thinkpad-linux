@@ -4,16 +4,32 @@ import (
 	"context"
 	"errors"
 	"log"
-	"os"
 	"os/exec"
 	"sync"
 	"time"
+
+	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/fprintd"
 )
+
+// Verifier performs a fingerprint verification against the fingerprint daemon.
+// It blocks until the user is verified, ctx is done, or an error occurs.
+// onRetry, if non-nil, is called with a short hint whenever the user should try
+// again. Implemented by *fprintd.Client; abstracted here for testing.
+type Verifier interface {
+	Verify(ctx context.Context, username string, onRetry func(hint string)) error
+	Close() error
+}
 
 // UserPresence handles user presence confirmation via fingerprint reader
 type UserPresence struct {
 	mu            sync.Mutex
 	activeRequest *request
+
+	// newVerifier creates a Verifier for a single confirmation. Overridable in
+	// tests; defaults to a fprintd D-Bus client.
+	newVerifier func() (Verifier, error)
+	// notify surfaces a desktop notification. Overridable in tests.
+	notify func(title, body string)
 }
 
 type request struct {
@@ -32,7 +48,12 @@ type Result struct {
 
 // New creates a new UserPresence handler
 func New() *UserPresence {
-	return &UserPresence{}
+	return &UserPresence{
+		newVerifier: func() (Verifier, error) {
+			return fprintd.New()
+		},
+		notify: notifySend,
+	}
 }
 
 // ConfirmPresence requests user presence confirmation via fingerprint
@@ -89,25 +110,26 @@ func (up *UserPresence) promptFingerprint(req *request, prompt string) {
 	defer cancel()
 
 	log.Printf("userpresence: prompt=%s", prompt)
+	up.notify("TPM-FIDO", prompt+"\n\nTouch fingerprint sensor to confirm.")
 
-	// Send notification to user (non-blocking)
-	notifyCmd := exec.Command("notify-send", "-u", "critical", "-t", "30000",
-		"TPM-FIDO", prompt+"\n\nTouch fingerprint sensor to confirm.")
-	if err := notifyCmd.Start(); err != nil {
-		log.Printf("userpresence: notify-send failed to start: %v", err)
-		// Continue anyway - fingerprint verification is the important part
+	verifier, err := up.newVerifier()
+	if err != nil {
+		log.Printf("userpresence: fingerprint daemon unavailable: %v", err)
+		sendResult(Result{OK: false, Error: err})
+		return
+	}
+	defer verifier.Close()
+
+	onRetry := func(hint string) {
+		log.Printf("userpresence: %s", hint)
+		up.notify("TPM-FIDO", hint)
 	}
 
-	// Run fprintd-verify with context timeout
-	log.Printf("userpresence: launching fprintd-verify")
-	fprintCmd := exec.CommandContext(ctx, "fprintd-verify")
-	fprintCmd.Stdout = os.Stderr // Must not use stdout - Native Messaging uses it
-	fprintCmd.Stderr = os.Stderr
-
-	err := fprintCmd.Run()
+	// Empty username verifies against the calling user's enrolled fingers.
+	err = verifier.Verify(ctx, "", onRetry)
 	if err != nil {
-		log.Printf("userpresence: fprintd-verify failed: %v", err)
-		if ctx.Err() == context.DeadlineExceeded {
+		log.Printf("userpresence: fingerprint verification failed: %v", err)
+		if errors.Is(err, context.DeadlineExceeded) {
 			sendResult(Result{OK: false, Error: errors.New("fingerprint verification timed out")})
 		} else {
 			sendResult(Result{OK: false, Error: err})
@@ -117,4 +139,21 @@ func (up *UserPresence) promptFingerprint(req *request, prompt string) {
 
 	log.Printf("userpresence: fingerprint verified successfully")
 	sendResult(Result{OK: true, Error: nil})
+}
+
+// notifySend shows a desktop notification via notify-send. The
+// x-canonical-private-synchronous hint collapses tpm-fido notifications into a
+// single slot, so retry hints replace the prompt instead of stacking.
+func notifySend(title, body string) {
+	cmd := exec.Command("notify-send",
+		"-u", "critical",
+		"-t", "30000",
+		"-h", "string:x-canonical-private-synchronous:tpm-fido",
+		title, body)
+	if err := cmd.Start(); err != nil {
+		log.Printf("userpresence: notify-send failed to start: %v", err)
+		return
+	}
+	// Reap the process so it does not become a zombie.
+	go cmd.Wait()
 }
