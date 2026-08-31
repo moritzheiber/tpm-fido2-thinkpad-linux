@@ -1,0 +1,3 @@
+tpm-fido usr/bin
+contrib/90-tpm-fido-uhid.rules usr/lib/udev/rules.d
+contrib/uhid.conf usr/lib/modules-load.d

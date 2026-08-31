@@ -1,0 +1,27 @@
+#!/usr/bin/make -f
+
+export GO111MODULE = on
+export GOFLAGS = -mod=vendor
+export CGO_ENABLED = 0
+export GOTOOLCHAIN = local
+export GOCACHE = $(CURDIR)/_build/go-cache
+export GOMODCACHE = $(CURDIR)/_build/go-mod
+export GOPATH = $(CURDIR)/_build/gopath
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	go build -trimpath -buildvcs=false -ldflags="-s -w" -o tpm-fido .
+
+override_dh_auto_test:
+	go test ./...
+
+override_dh_auto_install:
+
+override_dh_auto_clean:
+	rm -f tpm-fido
+	rm -rf _build
+
+override_dh_installsystemduser:
+	dh_installsystemduser --no-enable

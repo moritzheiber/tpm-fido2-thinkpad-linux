@@ -1,0 +1,6 @@
+/.debhelper/
+/files
+/tpm-fido/
+/tpm-fido.substvars
+/tpm-fido.debhelper.log
+/debhelper-build-stamp

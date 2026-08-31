@@ -1,0 +1,13 @@
+[Unit]
+Description=TPM-FIDO2 virtual security key
+Documentation=https://github.com/mc256/tpm-fido2-thinkpad-linux
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/tpm-fido --mode=daemon --tray
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

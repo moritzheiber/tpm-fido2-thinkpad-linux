@@ -1,0 +1,31 @@
+Source: tpm-fido
+Section: admin
+Priority: optional
+Maintainer: Moritz Heiber <moritzheiber@github.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ golang-go (>= 2:1.25~),
+ ca-certificates,
+Standards-Version: 4.7.2
+Homepage: https://github.com/mc256/tpm-fido2-thinkpad-linux
+Rules-Requires-Root: no
+
+Package: tpm-fido
+Architecture: any
+Depends:
+ ${misc:Depends},
+ fprintd,
+ tpm-udev,
+ kmod,
+ udev,
+Recommends:
+ libnotify-bin,
+ gnome-shell-extension-appindicator,
+Description: virtual FIDO2 security key backed by TPM 2.0 and a fingerprint reader
+ tpm-fido is a FIDO2/WebAuthn authenticator for Linux. It creates a virtual
+ FIDO2 HID device through /dev/uhid that browsers use like a hardware security
+ key.
+ .
+ Private keys are generated and stored in the TPM 2.0. User verification is
+ performed with the fingerprint reader through fprintd. The daemon is provided
+ as a systemd user service that runs in daemon mode with a system tray icon.

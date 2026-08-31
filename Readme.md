@@ -43,11 +43,68 @@ The installer will:
 
 After installation, open your browser and test at [webauthn.io](https://webauthn.io).
 
+## Debian package (Ubuntu 26.04)
+
+On Ubuntu 26.04 you can build and install a native Debian package instead of installing into your home directory. The package installs the daemon to `/usr/bin/tpm-fido`, ships a systemd user service, installs the udev rules for `/dev/uhid`, and configures the `uhid` kernel module.
+
+### Build
+
+The package builds inside a container, so the only thing you need on your machine is Docker.
+
+```bash
+./packaging/build-deb.sh
+```
+
+The build runs in an Ubuntu 26.04 container, produces a static binary from vendored Go dependencies, and writes the finished package to `build/deb/`.
+
+### Install
+
+```bash
+sudo apt install ./build/deb/tpm-fido_*.deb
+```
+
+Installing through `apt` resolves and pulls in the runtime dependencies for you.
+
+### Dependencies
+
+The package declares its dependencies so `apt` installs them automatically.
+
+**Depends** (required, installed automatically)
+- `fprintd` provides `fprintd-verify` for fingerprint verification
+- `tpm-udev` creates the `tss` group and grants that group access to `/dev/tpmrm0`
+- `kmod` and `udev` load the `uhid` module and reload the device rules during installation
+
+**Recommends** (optional, and installed by default on a normal desktop)
+- `libnotify-bin` provides `notify-send` for the fingerprint prompt notification
+- `gnome-shell-extension-appindicator` shows the system tray icon on GNOME
+
+### After installation
+
+The daemon runs as a systemd user service inside your own desktop session, so fingerprint verification and desktop notifications use your session and your enrolled fingerprints. The service is installed without being enabled, so it starts only once you enable it for your user.
+
+```bash
+# Grant TPM access (the tss group owns /dev/tpmrm0)
+sudo usermod -aG tss $USER
+
+# Grant /dev/uhid access
+sudo usermod -aG plugdev $USER
+
+# Log out and back in for the group changes to take effect
+
+# Enroll a fingerprint if you have not already
+fprintd-enroll
+
+# Enable and start the service for your user
+systemctl --user enable --now tpm-fido
+```
+
+The package sets up daemon mode, which works with Chromium, Firefox, and Google Chrome without a browser extension. The native messaging integration for the Chrome extension is a separate manual setup described under [Manual Installation](#manual-installation).
+
 ## Prerequisites
 
 - **TPM 2.0**: Your system must have `/dev/tpmrm0`
 - **Fingerprint reader**: Compatible with fprintd, with at least one finger enrolled
-- **Go 1.21+**: Required to build from source
+- **Go 1.25+**: Required to build from source
 - **Linux kernel**: `uhid` module (loaded automatically by the installer)
 
 ### User Setup
@@ -213,6 +270,21 @@ sudo usermod -aG plugdev $USER
 ### Service won't start after reboot
 - Ensure uhid module loads: `lsmod | grep uhid`
 - If not: `sudo modprobe uhid` and check `/etc/modules-load.d/uhid.conf` exists
+
+## Development
+
+Unit tests run without any special hardware.
+
+```bash
+go test ./...
+```
+
+The TPM register and sign flow is covered by an integration test that runs against an in-process TPM simulator. It is guarded by the `tpmsim` build tag because the simulator is built with cgo and needs a C toolchain and OpenSSL headers.
+
+```bash
+sudo apt install build-essential libssl-dev
+go test -tags tpmsim ./tpm/...
+```
 
 ## License
 
