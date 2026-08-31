@@ -19,7 +19,6 @@ Depends:
  kmod,
  udev,
 Recommends:
- libnotify-bin,
  gnome-shell-extension-appindicator,
 Description: virtual FIDO2 security key backed by TPM 2.0 and a fingerprint reader
  tpm-fido is a FIDO2/WebAuthn authenticator for Linux. It creates a virtual

@@ -26,23 +26,38 @@ func (f *fakeVerifier) Close() error {
 	return nil
 }
 
-// recorder collects notifications safely across goroutines.
-type recorder struct {
-	mu   sync.Mutex
-	msgs []string
+type notification struct {
+	title string
+	body  string
 }
 
-func (r *recorder) notify(title, body string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.msgs = append(r.msgs, body)
+type fakeNotifier struct {
+	mu        sync.Mutex
+	shown     []notification
+	showError error
+	closedCh  chan struct{}
+	closeOnce sync.Once
 }
 
-func (r *recorder) all() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := make([]string, len(r.msgs))
-	copy(out, r.msgs)
+func (f *fakeNotifier) Show(_ context.Context, title, body string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.shown = append(f.shown, notification{title: title, body: body})
+	return f.showError
+}
+
+func (f *fakeNotifier) Close() error {
+	if f.closedCh != nil {
+		f.closeOnce.Do(func() { close(f.closedCh) })
+	}
+	return nil
+}
+
+func (f *fakeNotifier) all() []notification {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]notification, len(f.shown))
+	copy(out, f.shown)
 	return out
 }
 
@@ -58,7 +73,6 @@ func waitResult(t *testing.T, ch chan Result) Result {
 }
 
 func TestConfirmPresenceSuccess(t *testing.T) {
-	rec := &recorder{}
 	fake := &fakeVerifier{
 		closedCh: make(chan struct{}),
 		verifyFunc: func(ctx context.Context, username string, onRetry func(string)) error {
@@ -68,9 +82,10 @@ func TestConfirmPresenceSuccess(t *testing.T) {
 			return nil
 		},
 	}
+	notifier := &fakeNotifier{closedCh: make(chan struct{})}
 	up := &UserPresence{
 		newVerifier: func() (Verifier, error) { return fake, nil },
-		notify:      rec.notify,
+		newNotifier: func() (Notifier, error) { return notifier, nil },
 	}
 
 	ch, err := up.ConfirmPresence("Register", [32]byte{1}, [32]byte{2})
@@ -80,7 +95,7 @@ func TestConfirmPresenceSuccess(t *testing.T) {
 	if r := waitResult(t, ch); !r.OK {
 		t.Fatalf("expected OK, got error %v", r.Error)
 	}
-	if len(rec.all()) == 0 {
+	if len(notifier.all()) == 0 {
 		t.Error("expected an initial prompt notification")
 	}
 	select {
@@ -88,17 +103,21 @@ func TestConfirmPresenceSuccess(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Error("expected the verifier to be closed")
 	}
+	select {
+	case <-notifier.closedCh:
+	case <-time.After(2 * time.Second):
+		t.Error("expected the notifier to be closed")
+	}
 }
 
 func TestConfirmPresenceFailure(t *testing.T) {
-	rec := &recorder{}
 	up := &UserPresence{
 		newVerifier: func() (Verifier, error) {
 			return &fakeVerifier{verifyFunc: func(ctx context.Context, username string, onRetry func(string)) error {
 				return errors.New("boom")
 			}}, nil
 		},
-		notify: rec.notify,
+		newNotifier: func() (Notifier, error) { return &fakeNotifier{}, nil },
 	}
 
 	ch, err := up.ConfirmPresence("Register", [32]byte{1}, [32]byte{2})
@@ -115,7 +134,7 @@ func TestConfirmPresenceFailure(t *testing.T) {
 }
 
 func TestConfirmPresenceRetryNotifies(t *testing.T) {
-	rec := &recorder{}
+	notifier := &fakeNotifier{}
 	up := &UserPresence{
 		newVerifier: func() (Verifier, error) {
 			return &fakeVerifier{verifyFunc: func(ctx context.Context, username string, onRetry func(string)) error {
@@ -123,7 +142,7 @@ func TestConfirmPresenceRetryNotifies(t *testing.T) {
 				return nil
 			}}, nil
 		},
-		notify: rec.notify,
+		newNotifier: func() (Notifier, error) { return notifier, nil },
 	}
 
 	ch, err := up.ConfirmPresence("Register", [32]byte{1}, [32]byte{2})
@@ -135,20 +154,20 @@ func TestConfirmPresenceRetryNotifies(t *testing.T) {
 	}
 
 	found := false
-	for _, m := range rec.all() {
-		if m == "Fingerprint not recognized. Touch the sensor again." {
+	for _, n := range notifier.all() {
+		if n.body == "Fingerprint not recognized. Touch the sensor again." {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("expected retry hint in notifications, got %v", rec.all())
+		t.Errorf("expected retry hint in notifications, got %v", notifier.all())
 	}
 }
 
 func TestConfirmPresenceVerifierInitError(t *testing.T) {
 	up := &UserPresence{
 		newVerifier: func() (Verifier, error) { return nil, errors.New("no bus") },
-		notify:      func(string, string) {},
+		newNotifier: func() (Notifier, error) { return &fakeNotifier{}, nil },
 	}
 
 	ch, err := up.ConfirmPresence("Register", [32]byte{1}, [32]byte{2})
@@ -161,6 +180,47 @@ func TestConfirmPresenceVerifierInitError(t *testing.T) {
 	}
 }
 
+func TestConfirmPresenceContinuesWithoutNotificationService(t *testing.T) {
+	up := &UserPresence{
+		newVerifier: func() (Verifier, error) {
+			return &fakeVerifier{verifyFunc: func(context.Context, string, func(string)) error {
+				return nil
+			}}, nil
+		},
+		newNotifier: func() (Notifier, error) {
+			return nil, errors.New("no notification service")
+		},
+	}
+
+	ch, err := up.ConfirmPresence("Register", [32]byte{1}, [32]byte{2})
+	if err != nil {
+		t.Fatalf("ConfirmPresence: %v", err)
+	}
+	if r := waitResult(t, ch); !r.OK {
+		t.Fatalf("notification service failure blocked verification: %v", r.Error)
+	}
+}
+
+func TestConfirmPresenceContinuesWhenNotificationFails(t *testing.T) {
+	notifier := &fakeNotifier{showError: errors.New("notify failed")}
+	up := &UserPresence{
+		newVerifier: func() (Verifier, error) {
+			return &fakeVerifier{verifyFunc: func(context.Context, string, func(string)) error {
+				return nil
+			}}, nil
+		},
+		newNotifier: func() (Notifier, error) { return notifier, nil },
+	}
+
+	ch, err := up.ConfirmPresence("Register", [32]byte{1}, [32]byte{2})
+	if err != nil {
+		t.Fatalf("ConfirmPresence: %v", err)
+	}
+	if r := waitResult(t, ch); !r.OK {
+		t.Fatalf("notification failure blocked verification: %v", r.Error)
+	}
+}
+
 func TestConfirmPresenceRejectsConcurrentDifferentRequest(t *testing.T) {
 	release := make(chan struct{})
 	up := &UserPresence{
@@ -170,7 +230,7 @@ func TestConfirmPresenceRejectsConcurrentDifferentRequest(t *testing.T) {
 				return nil
 			}}, nil
 		},
-		notify: func(string, string) {},
+		newNotifier: func() (Notifier, error) { return &fakeNotifier{}, nil },
 	}
 
 	ch1, err := up.ConfirmPresence("Register", [32]byte{1}, [32]byte{2})

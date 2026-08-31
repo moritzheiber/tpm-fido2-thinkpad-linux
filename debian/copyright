@@ -20,6 +20,15 @@ Files: debian/*
 Copyright: 2026 Moritz Heiber
 License: Expat
 
+Files: desktopnotify/*
+ fprintd/*
+ packaging/*
+ tpm/tpm_sim_test.go
+ tpm/tpm_test.go
+ userpresence/userpresence_test.go
+Copyright: 2026 Moritz Heiber
+License: Expat
+
 Files: vendor/fyne.io/systray/*
 Copyright: The Fyne Authors
 License: Apache-2.0

@@ -5,5 +5,6 @@ tpm-fido (0.0~git20260304) resolute; urgency=medium
   * Install a systemd user service that runs tpm-fido in daemon mode.
   * Ship udev rules for /dev/uhid access and snap browser hidraw tagging.
   * Ship a modules-load.d entry for the uhid kernel module.
+  * Use fprintd and desktop notification D-Bus APIs directly.
 
  -- Moritz Heiber <moritzheiber@github.com>  Mon, 31 Aug 2026 09:35:00 +0000

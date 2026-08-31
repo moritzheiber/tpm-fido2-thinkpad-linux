@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"log"
-	"os/exec"
 	"sync"
 	"time"
 
+	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/desktopnotify"
 	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/fprintd"
 )
 
@@ -20,6 +20,12 @@ type Verifier interface {
 	Close() error
 }
 
+// Notifier owns a replaceable desktop notification for one confirmation.
+type Notifier interface {
+	Show(ctx context.Context, title, body string) error
+	Close() error
+}
+
 // UserPresence handles user presence confirmation via fingerprint reader
 type UserPresence struct {
 	mu            sync.Mutex
@@ -28,8 +34,9 @@ type UserPresence struct {
 	// newVerifier creates a Verifier for a single confirmation. Overridable in
 	// tests; defaults to a fprintd D-Bus client.
 	newVerifier func() (Verifier, error)
-	// notify surfaces a desktop notification. Overridable in tests.
-	notify func(title, body string)
+	// newNotifier creates one replaceable desktop notification. Overridable in
+	// tests; defaults to an org.freedesktop.Notifications D-Bus client.
+	newNotifier func() (Notifier, error)
 }
 
 type request struct {
@@ -52,7 +59,9 @@ func New() *UserPresence {
 		newVerifier: func() (Verifier, error) {
 			return fprintd.New()
 		},
-		notify: notifySend,
+		newNotifier: func() (Notifier, error) {
+			return desktopnotify.New()
+		},
 	}
 }
 
@@ -110,7 +119,20 @@ func (up *UserPresence) promptFingerprint(req *request, prompt string) {
 	defer cancel()
 
 	log.Printf("userpresence: prompt=%s", prompt)
-	up.notify("TPM-FIDO", prompt+"\n\nTouch fingerprint sensor to confirm.")
+
+	notifier, err := up.newNotifier()
+	if err != nil {
+		log.Printf("userpresence: desktop notifications unavailable: %v", err)
+	} else {
+		defer func() {
+			if err := notifier.Close(); err != nil {
+				log.Printf("userpresence: close desktop notification: %v", err)
+			}
+		}()
+		if err := notifier.Show(ctx, "TPM-FIDO", prompt+"\n\nTouch fingerprint sensor to confirm."); err != nil {
+			log.Printf("userpresence: show desktop notification: %v", err)
+		}
+	}
 
 	verifier, err := up.newVerifier()
 	if err != nil {
@@ -122,7 +144,11 @@ func (up *UserPresence) promptFingerprint(req *request, prompt string) {
 
 	onRetry := func(hint string) {
 		log.Printf("userpresence: %s", hint)
-		up.notify("TPM-FIDO", hint)
+		if notifier != nil {
+			if err := notifier.Show(ctx, "TPM-FIDO", hint); err != nil {
+				log.Printf("userpresence: update desktop notification: %v", err)
+			}
+		}
 	}
 
 	// Empty username verifies against the calling user's enrolled fingers.
@@ -139,21 +165,4 @@ func (up *UserPresence) promptFingerprint(req *request, prompt string) {
 
 	log.Printf("userpresence: fingerprint verified successfully")
 	sendResult(Result{OK: true, Error: nil})
-}
-
-// notifySend shows a desktop notification via notify-send. The
-// x-canonical-private-synchronous hint collapses tpm-fido notifications into a
-// single slot, so retry hints replace the prompt instead of stacking.
-func notifySend(title, body string) {
-	cmd := exec.Command("notify-send",
-		"-u", "critical",
-		"-t", "30000",
-		"-h", "string:x-canonical-private-synchronous:tpm-fido",
-		title, body)
-	if err := cmd.Start(); err != nil {
-		log.Printf("userpresence: notify-send failed to start: %v", err)
-		return
-	}
-	// Reap the process so it does not become a zombie.
-	go cmd.Wait()
 }

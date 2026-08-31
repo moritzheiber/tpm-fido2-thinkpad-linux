@@ -70,12 +70,11 @@ Installing through `apt` resolves and pulls in the runtime dependencies for you.
 The package declares its dependencies so `apt` installs them automatically.
 
 **Depends** (required, installed automatically)
-- `fprintd` provides `fprintd-verify` for fingerprint verification
+- `fprintd` provides the fingerprint service used over D-Bus
 - `tpm-udev` creates the `tss` group and grants that group access to `/dev/tpmrm0`
 - `kmod` and `udev` load the `uhid` module and reload the device rules during installation
 
 **Recommends** (optional, and installed by default on a normal desktop)
-- `libnotify-bin` provides `notify-send` for the fingerprint prompt notification
 - `gnome-shell-extension-appindicator` shows the system tray icon on GNOME
 
 ### After installation
