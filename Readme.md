@@ -28,7 +28,7 @@ Other laptops with a TPM 2.0 and an fprintd-compatible fingerprint reader should
 ## Quick Start
 
 ```bash
-git clone https://github.com/mc256/tpm-fido2-thinkpad-linux.git
+git clone https://github.com/moritzheiber/tpm-fido2-thinkpad-linux.git
 cd tpm-fido2-thinkpad-linux
 ./contrib/install-daemon.sh
 ```
@@ -283,6 +283,18 @@ The TPM register and sign flow is covered by an integration test that runs again
 ```bash
 sudo apt install build-essential libssl-dev
 go test -tags tpmsim ./tpm/...
+```
+
+UHID integration tests create temporary virtual devices through `/dev/uhid` and check protocol I/O and resource cleanup. They require the device permissions from the installation steps and should run with the daemon stopped.
+
+```bash
+go test -race -tags uhid ./fidohid
+```
+
+The live fingerprint integration test waits for a touch and accepts any enrolled finger.
+
+```bash
+go test -tags fingerprint -run TestLiveAnyFinger -v ./fprintd
 ```
 
 ## License

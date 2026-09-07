@@ -37,11 +37,13 @@ type UserPresence struct {
 	// newNotifier creates one replaceable desktop notification. Overridable in
 	// tests; defaults to an org.freedesktop.Notifications D-Bus client.
 	newNotifier func() (Notifier, error)
+
+	requestTimeout time.Duration
 }
 
 type request struct {
 	timeout          time.Duration
-	pendingResult    chan Result
+	waiters          []chan Result
 	extendTimeout    chan time.Duration
 	challengeParam   [32]byte
 	applicationParam [32]byte
@@ -62,6 +64,7 @@ func New() *UserPresence {
 		newNotifier: func() (Notifier, error) {
 			return desktopnotify.New()
 		},
+		requestTimeout: 30 * time.Second,
 	}
 }
 
@@ -70,52 +73,55 @@ func (up *UserPresence) ConfirmPresence(prompt string, challengeParam, applicati
 	up.mu.Lock()
 	defer up.mu.Unlock()
 
-	timeout := 30 * time.Second
+	timeout := up.requestTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
 
 	if up.activeRequest != nil {
 		if challengeParam != up.activeRequest.challengeParam || applicationParam != up.activeRequest.applicationParam {
 			return nil, errors.New("other request already in progress")
 		}
 
-		extendTimeoutChan := up.activeRequest.extendTimeout
-
-		go func() {
-			select {
-			case extendTimeoutChan <- timeout:
-			case <-time.After(2 * time.Second):
-			}
-		}()
-
-		return up.activeRequest.pendingResult, nil
+		result := make(chan Result, 1)
+		up.activeRequest.waiters = append(up.activeRequest.waiters, result)
+		select {
+		case <-up.activeRequest.extendTimeout:
+		default:
+		}
+		up.activeRequest.extendTimeout <- timeout
+		return result, nil
 	}
 
+	result := make(chan Result, 1)
 	up.activeRequest = &request{
 		timeout:          timeout,
 		challengeParam:   challengeParam,
 		applicationParam: applicationParam,
-		pendingResult:    make(chan Result),
-		extendTimeout:    make(chan time.Duration),
+		waiters:          []chan Result{result},
+		extendTimeout:    make(chan time.Duration, 1),
 	}
 
 	go up.promptFingerprint(up.activeRequest, prompt)
 
-	return up.activeRequest.pendingResult, nil
+	return result, nil
 }
 
 func (up *UserPresence) promptFingerprint(req *request, prompt string) {
 	sendResult := func(r Result) {
-		select {
-		case req.pendingResult <- r:
-		case <-time.After(2 * time.Second):
-			// Client likely gone
-		}
-
 		up.mu.Lock()
-		up.activeRequest = nil
+		if up.activeRequest == req {
+			up.activeRequest = nil
+		}
+		waiters := append([]chan Result(nil), req.waiters...)
 		up.mu.Unlock()
+		for _, waiter := range waiters {
+			waiter <- r
+			close(waiter)
+		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), req.timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	log.Printf("userpresence: prompt=%s", prompt)
@@ -140,7 +146,11 @@ func (up *UserPresence) promptFingerprint(req *request, prompt string) {
 		sendResult(Result{OK: false, Error: err})
 		return
 	}
-	defer verifier.Close()
+	defer func() {
+		if err := verifier.Close(); err != nil {
+			log.Printf("userpresence: close fingerprint verifier: %v", err)
+		}
+	}()
 
 	onRetry := func(hint string) {
 		log.Printf("userpresence: %s", hint)
@@ -151,18 +161,40 @@ func (up *UserPresence) promptFingerprint(req *request, prompt string) {
 		}
 	}
 
-	// Empty username verifies against the calling user's enrolled fingers.
-	err = verifier.Verify(ctx, "", onRetry)
-	if err != nil {
-		log.Printf("userpresence: fingerprint verification failed: %v", err)
-		if errors.Is(err, context.DeadlineExceeded) {
-			sendResult(Result{OK: false, Error: errors.New("fingerprint verification timed out")})
-		} else {
-			sendResult(Result{OK: false, Error: err})
-		}
-		return
-	}
+	verification := make(chan error, 1)
+	go func() {
+		// Empty username verifies against the calling user's enrolled fingers.
+		verification <- verifier.Verify(ctx, "", onRetry)
+	}()
 
-	log.Printf("userpresence: fingerprint verified successfully")
-	sendResult(Result{OK: true, Error: nil})
+	timer := time.NewTimer(req.timeout)
+	defer timer.Stop()
+	for {
+		select {
+		case err = <-verification:
+			if err != nil {
+				log.Printf("userpresence: fingerprint verification failed: %v", err)
+				sendResult(Result{OK: false, Error: err})
+				return
+			}
+			log.Printf("userpresence: fingerprint verified successfully")
+			sendResult(Result{OK: true})
+			return
+		case timeout := <-req.extendTimeout:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(timeout)
+		case <-timer.C:
+			cancel()
+			if cleanupErr := <-verification; cleanupErr != nil && !errors.Is(cleanupErr, context.Canceled) {
+				log.Printf("userpresence: fingerprint verification cleanup after timeout: %v", cleanupErr)
+			}
+			sendResult(Result{OK: false, Error: errors.New("fingerprint verification timed out")})
+			return
+		}
+	}
 }

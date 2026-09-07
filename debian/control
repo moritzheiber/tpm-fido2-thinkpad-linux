@@ -7,7 +7,7 @@ Build-Depends:
  golang-go (>= 2:1.25~),
  ca-certificates,
 Standards-Version: 4.7.2
-Homepage: https://github.com/mc256/tpm-fido2-thinkpad-linux
+Homepage: https://github.com/moritzheiber/tpm-fido2-thinkpad-linux
 Rules-Requires-Root: no
 
 Package: tpm-fido

@@ -1,6 +1,6 @@
 [Unit]
 Description=TPM-FIDO2 virtual security key
-Documentation=https://github.com/mc256/tpm-fido2-thinkpad-linux
+Documentation=https://github.com/moritzheiber/tpm-fido2-thinkpad-linux
 After=graphical-session.target
 
 [Service]
@@ -10,6 +10,10 @@ Restart=on-failure
 RestartSec=2
 RestartSteps=10
 RestartMaxDelaySec=60
+MemoryHigh=64M
+MemoryMax=128M
+TasksMax=64
+LimitNOFILE=256
 
 [Install]
 WantedBy=default.target

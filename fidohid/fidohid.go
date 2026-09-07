@@ -7,11 +7,14 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
+	"fmt"
+	"io"
 	"log"
 	"sync"
 	"time"
 
-	"github.com/psanford/uhid"
+	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/internal/uhid"
 )
 
 // FIDO2 HID report descriptor (usage page 0xF1D0)
@@ -101,93 +104,128 @@ type channel struct {
 
 // Device is a virtual FIDO2 HID device backed by /dev/uhid.
 type Device struct {
-	dev     *uhid.Device
+	dev     hidTransport
+	open    func(context.Context) (hidTransport, error)
 	handler CommandHandler
 
 	mu       sync.Mutex
 	channels map[uint32]*channel
 
 	writeMu sync.Mutex // serializes multi-packet HID responses
+
+	lifecycleMu sync.Mutex
+	started     bool
+	closed      bool
+	cancel      context.CancelFunc
+	done        chan struct{}
+	closeErr    error
+	workers     sync.WaitGroup
 }
 
-// New creates a new virtual FIDO2 HID device. The name appears in
-// /sys/devices/virtual/misc/uhid/ and is matched by udev rules.
-// Call Run() to start processing HID events.
+type hidTransport interface {
+	Read(context.Context) (uhid.Event, error)
+	WriteInput([]byte) error
+	Close() error
+}
+
+// New configures a virtual FIDO2 device. Run creates and owns its transport.
 func New(name string, handler CommandHandler) (*Device, error) {
-	dev, err := uhid.NewDevice(name, fidoReportDescriptor)
-	if err != nil {
+	config := uhid.Config{
+		Name: name, Descriptor: fidoReportDescriptor,
+		Bus: 3, VendorID: 0x1209, ProductID: 0xf1d0,
+	}
+	if err := config.Validate(); err != nil {
 		return nil, err
 	}
 
-	// Appear as a USB FIDO2 device
-	dev.Data.Bus = 0x03       // BUS_USB
-	dev.Data.VendorID = 0x1209  // pid.codes open-source VID
-	dev.Data.ProductID = 0xF1D0 // FIDO-themed PID
-
 	return &Device{
-		dev:      dev,
+		open: func(ctx context.Context) (hidTransport, error) {
+			return uhid.Open(ctx, config)
+		},
 		handler:  handler,
 		channels: make(map[uint32]*channel),
 	}, nil
 }
 
-// Run opens the virtual HID device and processes events until ctx is cancelled.
-// It blocks until the context is done or an unrecoverable error occurs.
-func (d *Device) Run(ctx context.Context) error {
-	events, err := d.dev.Open(ctx)
+// Run processes HID events until cancellation or a transport error, then closes
+// the transport and waits for its command workers.
+func (d *Device) Run(parent context.Context) (err error) {
+	d.lifecycleMu.Lock()
+	if d.started || d.closed {
+		d.lifecycleMu.Unlock()
+		return errors.New("FIDO device has already run or been closed")
+	}
+	d.started = true
+	ctx, cancel := context.WithCancel(parent)
+	d.cancel, d.done = cancel, make(chan struct{})
+	d.lifecycleMu.Unlock()
+
+	defer func() {
+		cancel()
+		d.mu.Lock()
+		for _, ch := range d.channels {
+			if ch.cancelFunc != nil {
+				ch.cancelFunc()
+			}
+		}
+		d.mu.Unlock()
+		var closeErr error
+		if d.dev != nil {
+			closeErr = d.dev.Close()
+		}
+		d.workers.Wait()
+		d.mu.Lock()
+		d.channels = nil
+		d.mu.Unlock()
+		err = errors.Join(err, closeErr)
+		d.lifecycleMu.Lock()
+		d.closed, d.closeErr = true, closeErr
+		close(d.done)
+		d.lifecycleMu.Unlock()
+	}()
+
+	transport, err := d.open(ctx)
 	if err != nil {
 		return err
 	}
-
-	// Log the hidraw nodes for debugging
-	nodes, err := d.dev.HidrawNodes(ctx)
-	if err == nil && len(nodes) > 0 {
-		log.Printf("fidohid: virtual FIDO2 device created: %v", nodes)
-	}
-
-	go d.cleanupChannels(ctx)
+	d.dev = transport
+	log.Printf("fidohid: virtual FIDO2 device created")
+	d.workers.Go(func() { d.cleanupChannels(ctx) })
 
 	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case ev, ok := <-events:
-			if !ok {
-				return nil
-			}
-			if ev.Err != nil {
-				log.Printf("fidohid: event error: %v", ev.Err)
-				continue
-			}
-			switch ev.Type {
-			case uhid.Output:
-				d.handleOutput(ev.Data)
-			case uhid.Open:
-				log.Printf("fidohid: device opened by host")
-			case uhid.Close:
-				log.Printf("fidohid: device closed by host")
-			}
+		ev, err := d.dev.Read(ctx)
+		if err != nil {
+			return fmt.Errorf("FIDO device read: %w", err)
+		}
+		switch ev.Type {
+		case uhid.Output:
+			d.handleOutput(ctx, ev.Data)
+		case uhid.Opened:
+			log.Printf("fidohid: device opened by host")
+		case uhid.Closed:
+			log.Printf("fidohid: device closed by host")
+		case uhid.Stopped:
+			return io.EOF
 		}
 	}
 }
 
-// Close destroys the virtual HID device.
+// Close cancels Run and waits for transport and command cleanup.
 func (d *Device) Close() error {
-	// Cancel all in-progress operations
-	d.mu.Lock()
-	for _, ch := range d.channels {
-		if ch.cancelFunc != nil {
-			ch.cancelFunc()
-		}
+	d.lifecycleMu.Lock()
+	d.closed = true
+	done, cancel := d.done, d.cancel
+	d.lifecycleMu.Unlock()
+	if done == nil {
+		return nil
 	}
-	d.channels = make(map[uint32]*channel)
-	d.mu.Unlock()
-
-	return d.dev.Close()
+	cancel()
+	<-done
+	return d.closeErr
 }
 
 // handleOutput processes a single HID output report from the host.
-func (d *Device) handleOutput(data []byte) {
+func (d *Device) handleOutput(ctx context.Context, data []byte) {
 	// Linux hidraw prepends a report ID byte (0x00 for devices without
 	// explicit Report IDs). The uhid Output event includes this prefix,
 	// so skip it to get the actual 64-byte CTAPHID packet.
@@ -213,16 +251,16 @@ func (d *Device) handleOutput(data []byte) {
 		// Initialization packet
 		cmd := data[4] & 0x7F
 		bcnt := binary.BigEndian.Uint16(data[5:7])
-		d.handleInitPacket(cid, cmd, bcnt, data[7:])
+		d.handleInitPacket(ctx, cid, cmd, bcnt, data[7:])
 	} else {
 		// Continuation packet
 		seq := data[4]
-		d.handleContPacket(cid, seq, data[5:])
+		d.handleContPacket(ctx, cid, seq, data[5:])
 	}
 }
 
 // handleInitPacket processes a CTAPHID initialization packet.
-func (d *Device) handleInitPacket(cid uint32, cmd byte, bcnt uint16, payload []byte) {
+func (d *Device) handleInitPacket(ctx context.Context, cid uint32, cmd byte, bcnt uint16, payload []byte) {
 	log.Printf("fidohid: init CID=%08x CMD=0x%02x BCNT=%d", cid, cmd, bcnt)
 
 	// INIT on broadcast CID is always allowed
@@ -270,12 +308,12 @@ func (d *Device) handleInitPacket(cid uint32, cmd byte, bcnt uint16, payload []b
 
 	// If the full message fits in one packet, dispatch immediately
 	if uint16(len(msgData)) >= bcnt {
-		d.dispatchCommand(cid, cmd, msgData[:bcnt])
+		d.dispatchCommand(ctx, cid, cmd, msgData[:bcnt])
 	}
 }
 
 // handleContPacket processes a CTAPHID continuation packet.
-func (d *Device) handleContPacket(cid uint32, seq byte, payload []byte) {
+func (d *Device) handleContPacket(ctx context.Context, cid uint32, seq byte, payload []byte) {
 	d.mu.Lock()
 	ch, exists := d.channels[cid]
 	if !exists || ch.totalLen == 0 {
@@ -310,7 +348,7 @@ func (d *Device) handleContPacket(cid uint32, seq byte, payload []byte) {
 	d.mu.Unlock()
 
 	if complete {
-		d.dispatchCommand(cid, cmd, data)
+		d.dispatchCommand(ctx, cid, cmd, data)
 	}
 }
 
@@ -352,11 +390,11 @@ func (d *Device) handleInit(cid uint32, nonce []byte) {
 }
 
 // dispatchCommand routes a fully-assembled CTAPHID message.
-func (d *Device) dispatchCommand(cid uint32, cmd byte, data []byte) {
+func (d *Device) dispatchCommand(ctx context.Context, cid uint32, cmd byte, data []byte) {
 	switch cmd {
 	case cmdCBOR:
 		// CBOR commands may block (fingerprint), run in goroutine
-		go d.handleCBOR(cid, data)
+		d.workers.Go(func() { d.handleCBOR(ctx, cid, data) })
 	case cmdPing:
 		d.sendResponse(cid, cmdPing, data)
 	case cmdMsg:
@@ -369,7 +407,10 @@ func (d *Device) dispatchCommand(cid uint32, cmd byte, data []byte) {
 }
 
 // handleCBOR dispatches a CTAP2 CBOR command and sends keepalives while waiting.
-func (d *Device) handleCBOR(cid uint32, data []byte) {
+func (d *Device) handleCBOR(parent context.Context, cid uint32, data []byte) {
+	if parent.Err() != nil {
+		return
+	}
 	if len(data) < 1 {
 		d.sendError(cid, errInvalidLen)
 		return
@@ -380,7 +421,7 @@ func (d *Device) handleCBOR(cid uint32, data []byte) {
 
 	log.Printf("fidohid: CBOR cmd=0x%02x datalen=%d", ctapCmd, len(ctapData))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
 
 	// Store cancel so CTAPHID_CANCEL can abort the operation
@@ -399,10 +440,10 @@ func (d *Device) handleCBOR(cid uint32, data []byte) {
 	}
 	resultCh := make(chan result, 1)
 
-	go func() {
+	d.workers.Go(func() {
 		status, resp := d.handler.HandleCommand(ctx, ctapCmd, ctapData)
 		resultCh <- result{status, resp}
-	}()
+	})
 
 	ticker := time.NewTicker(keepaliveInterval)
 	defer ticker.Stop()
@@ -449,7 +490,7 @@ func (d *Device) sendResponse(cid uint32, cmd byte, data []byte) {
 	binary.BigEndian.PutUint16(pkt[5:7], uint16(len(data)))
 
 	n := copy(pkt[7:], data)
-	if err := d.dev.InjectEvent(pkt); err != nil {
+	if err := d.dev.WriteInput(pkt); err != nil {
 		log.Printf("fidohid: inject error: %v", err)
 		return
 	}
@@ -463,7 +504,7 @@ func (d *Device) sendResponse(cid uint32, cmd byte, data []byte) {
 		binary.BigEndian.PutUint32(pkt[0:4], cid)
 		pkt[4] = seq
 		n = copy(pkt[5:], data)
-		if err := d.dev.InjectEvent(pkt); err != nil {
+		if err := d.dev.WriteInput(pkt); err != nil {
 			log.Printf("fidohid: inject error: %v", err)
 			return
 		}

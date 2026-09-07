@@ -25,9 +25,9 @@ import (
 )
 
 var (
-	backend  = flag.String("backend", "tpm", "Backend to use: tpm or memory")
-	device   = flag.String("device", "/dev/tpmrm0", "TPM device path")
-	mode     = flag.String("mode", "native", "Operating mode: native (Chrome extension) or daemon (virtual HID device)")
+	backend    = flag.String("backend", "tpm", "Backend to use: tpm or memory")
+	device     = flag.String("device", "/dev/tpmrm0", "TPM device path")
+	mode       = flag.String("mode", "native", "Operating mode: native (Chrome extension) or daemon (virtual HID device)")
 	showTray   = flag.Bool("tray", false, "Show system tray icon for toggling the virtual device (daemon mode only)")
 	autoSwitch = flag.Bool("auto-switch", true, "Automatically disable virtual key when a YubiKey is plugged in (tray mode only)")
 )
@@ -134,11 +134,10 @@ func runDaemonHeadless(ctap2Handler *ctap2.Handler) {
 
 	log.Printf("Virtual FIDO2 HID device daemon started")
 
-	if err := dev.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+	if err := deviceRunError(dev.Run(ctx)); err != nil {
 		log.Fatalf("Device error: %v", err)
 	}
 
-	dev.Close()
 	log.Printf("Daemon stopped")
 }
 
@@ -147,21 +146,25 @@ func runDaemonHeadless(ctap2Handler *ctap2.Handler) {
 // a background goroutine and can be toggled on/off from the tray menu.
 func runDaemonWithTray(ctap2Handler *ctap2.Handler) {
 	var (
-		mu              sync.Mutex
-		dev             *fidohid.Device
-		devCancel       context.CancelFunc
-		autoSwitchOn    = *autoSwitch
-		stoppedByAuto   bool // true if auto-switch disabled the device
-		yubiKeyPresent  bool
+		mu        sync.Mutex
+		dev       *fidohid.Device
+		devCancel context.CancelFunc
+		devDone   chan struct{}
+		state     = autoSwitchState{automatic: *autoSwitch}
+		t         *tray.Tray
 	)
 
-	// startDevice creates and runs the virtual HID device in a goroutine.
-	startDevice := func() {
-		mu.Lock()
-		defer mu.Unlock()
-
+	startDeviceLocked := func() {
 		if dev != nil {
-			return // already running
+			select {
+			case <-devDone:
+				if devCancel != nil {
+					devCancel()
+				}
+				dev, devCancel, devDone = nil, nil, nil
+			default:
+				return
+			}
 		}
 
 		d, err := fidohid.New("tpm-fido", ctap2Handler)
@@ -173,30 +176,53 @@ func runDaemonWithTray(ctap2Handler *ctap2.Handler) {
 		ctx, c := context.WithCancel(context.Background())
 		dev = d
 		devCancel = c
+		done := make(chan struct{})
+		devDone = done
 
 		go func() {
+			defer close(done)
+			defer c()
 			log.Printf("Virtual FIDO2 HID device started")
-			if err := d.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			if err := deviceRunError(d.Run(ctx)); err != nil {
 				log.Printf("Device error: %v", err)
 			}
-			d.Close()
 			log.Printf("Virtual FIDO2 HID device stopped")
 		}()
 	}
 
-	// stopDevice destroys the virtual HID device.
-	stopDevice := func() {
-		mu.Lock()
-		defer mu.Unlock()
-
+	stopDeviceLocked := func() {
 		if devCancel != nil {
 			devCancel()
 			devCancel = nil
 		}
-		if dev != nil {
-			dev.Close()
-			dev = nil
+		if devDone != nil {
+			<-devDone
+			devDone = nil
 		}
+		dev = nil
+	}
+
+	transition := func(update func(*autoSwitchState) deviceAction) deviceAction {
+		mu.Lock()
+		action := update(&state)
+		switch action {
+		case deviceStart:
+			startDeviceLocked()
+		case deviceStop:
+			stopDeviceLocked()
+		}
+		active := dev != nil
+		mu.Unlock()
+		if t != nil {
+			t.SetActive(active)
+		}
+		return action
+	}
+
+	stopDevice := func() {
+		mu.Lock()
+		stopDeviceLocked()
+		mu.Unlock()
 	}
 
 	// Handle SIGTERM/SIGINT for clean shutdown
@@ -211,87 +237,82 @@ func runDaemonWithTray(ctap2Handler *ctap2.Handler) {
 		os.Exit(0)
 	}()
 
-	// Start the device immediately
-	startDevice()
-
 	// Create the tray with auto-switch callback.
-	// Declare t first so closures can reference it.
-	var t *tray.Tray
 	t = tray.New(
 		func() { // onEnable
-			stoppedByAuto = false
-			startDevice()
+			transition((*autoSwitchState).userEnable)
 		},
 		func() { // onDisable
-			stoppedByAuto = false
-			stopDevice()
+			transition((*autoSwitchState).userDisable)
 		},
 		func() { // onQuit
 			monCancel()
 			stopDevice()
 		},
 		func(enabled bool) { // onAutoSwitchChanged
-			mu.Lock()
-			autoSwitchOn = enabled
-			wasStoppedByAuto := stoppedByAuto
-			present := yubiKeyPresent
-			mu.Unlock()
-
-			if !enabled && wasStoppedByAuto {
+			switch transition(func(state *autoSwitchState) deviceAction {
+				return state.setAutomatic(enabled)
+			}) {
+			case deviceStart:
 				log.Printf("auto-switch disabled, re-enabling virtual device")
-				stoppedByAuto = false
-				startDevice()
-				t.SetActive(true)
-			} else if enabled && present {
+			case deviceStop:
 				log.Printf("auto-switch enabled with YubiKey present, disabling virtual device")
-				stoppedByAuto = true
-				stopDevice()
-				t.SetActive(false)
 			}
+			t.SetAutoSwitch(enabled)
 		},
 	)
-	t.SetAutoSwitch(autoSwitchOn)
+	t.SetAutoSwitch(state.automatic)
+	transition((*autoSwitchState).userEnable)
 
 	// Start the USB monitor for YubiKey detection
 	mon := &usbmon.Monitor{
 		VendorID: "1050", // Yubico
 		Interval: 2 * time.Second,
 		OnInsert: func(product string) {
-			mu.Lock()
-			yubiKeyPresent = true
-			enabled := autoSwitchOn
-			mu.Unlock()
-
 			t.SetYubiKeyDetected(true, product)
-			if enabled {
+			if transition(func(state *autoSwitchState) deviceAction {
+				return state.setKeyPresent(true)
+			}) == deviceStop {
 				log.Printf("YubiKey inserted, auto-disabling virtual device")
-				stoppedByAuto = true
-				stopDevice()
-				t.SetActive(false)
 			}
 		},
 		OnRemove: func() {
-			mu.Lock()
-			yubiKeyPresent = false
-			enabled := autoSwitchOn
-			wasStoppedByAuto := stoppedByAuto
-			mu.Unlock()
-
 			t.SetYubiKeyDetected(false, "")
-			if enabled && wasStoppedByAuto {
+			if transition(func(state *autoSwitchState) deviceAction {
+				return state.setKeyPresent(false)
+			}) == deviceStart {
 				log.Printf("YubiKey removed, auto-enabling virtual device")
-				stoppedByAuto = false
-				startDevice()
-				t.SetActive(true)
 			}
 		},
 	}
 
 	go mon.Run(monCtx)
 
-	log.Printf("Starting system tray icon (auto-switch=%v)", autoSwitchOn)
+	log.Printf("Starting system tray icon (auto-switch=%v)", state.automatic)
 	t.Run()
+	monCancel()
+	stopDevice()
 	log.Printf("Daemon stopped")
+}
+
+// Discard expected cancellation while retaining joined cleanup failures.
+func deviceRunError(err error) error {
+	if err == nil || err == context.Canceled {
+		return nil
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		var failures []error
+		for _, part := range joined.Unwrap() {
+			if failure := deviceRunError(part); failure != nil {
+				failures = append(failures, failure)
+			}
+		}
+		return errors.Join(failures...)
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok && deviceRunError(wrapped.Unwrap()) == nil {
+		return nil
+	}
+	return err
 }
 
 // runNativeMessaging runs the Native Messaging I/O loop

@@ -1,7 +1,7 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: tpm-fido
-Upstream-Contact: https://github.com/mc256/tpm-fido2-thinkpad-linux
-Source: https://github.com/mc256/tpm-fido2-thinkpad-linux
+Upstream-Contact: https://github.com/moritzheiber/tpm-fido2-thinkpad-linux/issues
+Source: https://github.com/moritzheiber/tpm-fido2-thinkpad-linux
 Comment:
  The binary package ships a statically linked Go executable that embeds the
  third-party Go modules listed below. Their copyright and license terms are
@@ -22,11 +22,26 @@ License: Expat
 
 Files: desktopnotify/*
  fprintd/*
+ auto_switch.go
+ auto_switch_test.go
+ internal/uhid/*
  packaging/*
+ fidohid/lifecycle_test.go
+ fidohid/uhid_integration_test.go
+ tray/tray_test.go
  tpm/tpm_sim_test.go
  tpm/tpm_test.go
+ tpmfido_test.go
  userpresence/userpresence_test.go
 Copyright: 2026 Moritz Heiber
+License: Expat
+
+Files: fidohid/fidohid.go
+ tpmfido.go
+ tray/tray.go
+ userpresence/userpresence.go
+Copyright: 2021 Peter Sanford
+ 2026 Moritz Heiber
 License: Expat
 
 Files: vendor/fyne.io/systray/*
@@ -48,10 +63,6 @@ License: Expat
 Files: vendor/github.com/godbus/dbus/*
 Copyright: 2013 Georg Reinke, Google
 License: BSD-2-Clause
-
-Files: vendor/github.com/psanford/uhid/*
-Copyright: 2017 The Chromium OS Authors
-License: BSD-3-Clause-Chromium
 
 Files: vendor/golang.org/x/crypto/*
  vendor/golang.org/x/sys/*
@@ -129,33 +140,6 @@ License: BSD-3-Clause
  in the documentation and/or other materials provided with the
  distribution.
     * Neither the name of Google LLC nor the names of its
- contributors may be used to endorse or promote products derived from
- this software without specific prior written permission.
- .
- THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-License: BSD-3-Clause-Chromium
- Redistribution and use in source and binary forms, with or without
- modification, are permitted provided that the following conditions are
- met:
- .
-    * Redistributions of source code must retain the above copyright
- notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above
- copyright notice, this list of conditions and the following disclaimer
- in the documentation and/or other materials provided with the
- distribution.
-    * Neither the name of Google Inc. nor the names of its
  contributors may be used to endorse or promote products derived from
  this software without specific prior written permission.
  .

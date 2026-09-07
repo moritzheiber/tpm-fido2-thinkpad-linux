@@ -1,3 +1,16 @@
+tpm-fido (0.0~git20260907.1) resolute; urgency=medium
+
+  * Replace the external UHID library with a cancellable native transport.
+  * Close device resources on failed startup and serialize daemon shutdown.
+  * Add transport, lifecycle, and opt-in kernel integration tests.
+  * Serialize auto-switch state and make tray updates safe before startup.
+  * Fan out duplicate fingerprint requests and extend their active timeout.
+  * Bound fprintd cleanup calls and handle closed signal streams.
+  * Add conservative service memory, task, and file descriptor limits.
+  * Update maintained repository links to the fork.
+
+ -- Moritz Heiber <moritzheiber@github.com>  Mon, 07 Sep 2026 13:43:02 +0000
+
 tpm-fido (0.0~git20260304) resolute; urgency=medium
 
   * Initial Debian packaging targeting Ubuntu 26.04.

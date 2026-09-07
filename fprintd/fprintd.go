@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -28,11 +29,13 @@ const (
 
 	sigVerifyStatus = deviceIface + ".VerifyStatus"
 
-	noMatchHint = "Fingerprint not recognized. Touch the sensor again."
+	noMatchHint    = "Fingerprint not recognized. Touch the sensor again."
+	cleanupTimeout = 2 * time.Second
 )
 
 // ErrNoDevice is returned when fprintd reports no fingerprint device.
 var ErrNoDevice = errors.New("no fingerprint device available")
+var errSignalStreamClosed = errors.New("fprintd signal stream closed")
 
 type verifyOutcome int
 
@@ -75,7 +78,7 @@ type verifySession interface {
 	// start begins a verification attempt (VerifyStart "any").
 	start(ctx context.Context) error
 	// stop ends the current attempt (VerifyStop).
-	stop()
+	stop(context.Context) error
 	// next returns the next VerifyStatus result string, or an error if the
 	// context is done or the stream fails.
 	next(ctx context.Context) (string, error)
@@ -91,8 +94,10 @@ func verify(ctx context.Context, s verifySession, onRetry func(hint string)) err
 			return fmt.Errorf("verify start: %w", err)
 		}
 		matched, retry, err := attempt(ctx, s, onRetry)
-		s.stop()
-		if err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		stopErr := s.stop(cleanupCtx)
+		cancel()
+		if err := errors.Join(err, stopErr); err != nil {
 			return err
 		}
 		if matched {
@@ -155,7 +160,7 @@ func (c *Client) Close() error {
 // the calling user), then verifies against any enrolled finger, retrying until a
 // match, ctx is done, or an unrecoverable error occurs. onRetry, if non-nil, is
 // called with a short hint whenever the user should try again.
-func (c *Client) Verify(ctx context.Context, username string, onRetry func(hint string)) error {
+func (c *Client) Verify(ctx context.Context, username string, onRetry func(hint string)) (err error) {
 	var devPath dbus.ObjectPath
 	manager := c.conn.Object(busName, managerPath)
 	if err := manager.CallWithContext(ctx, managerIface+".GetDefaultDevice", 0).Store(&devPath); err != nil {
@@ -170,17 +175,28 @@ func (c *Client) Verify(ctx context.Context, username string, onRetry func(hint 
 	if call := dev.CallWithContext(ctx, deviceIface+".Claim", 0, username); call.Err != nil {
 		return fmt.Errorf("claim device: %w", call.Err)
 	}
-	// Release with a background context so cleanup runs even after ctx expires.
-	defer dev.Call(deviceIface+".Release", 0)
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		defer cancel()
+		if call := dev.CallWithContext(cleanupCtx, deviceIface+".Release", 0); call.Err != nil {
+			err = errors.Join(err, fmt.Errorf("release fingerprint device: %w", call.Err))
+		}
+	}()
 
 	matchOpts := []dbus.MatchOption{
 		dbus.WithMatchObjectPath(devPath),
 		dbus.WithMatchInterface(deviceIface),
 	}
-	if err := c.conn.AddMatchSignal(matchOpts...); err != nil {
+	if err := c.conn.AddMatchSignalContext(ctx, matchOpts...); err != nil {
 		return fmt.Errorf("subscribe to fprintd signals: %w", err)
 	}
-	defer c.conn.RemoveMatchSignal(matchOpts...)
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		defer cancel()
+		if removeErr := c.conn.RemoveMatchSignalContext(cleanupCtx, matchOpts...); removeErr != nil {
+			err = errors.Join(err, fmt.Errorf("unsubscribe from fprintd signals: %w", removeErr))
+		}
+	}()
 
 	sigCh := make(chan *dbus.Signal, 16)
 	c.conn.Signal(sigCh)
@@ -204,10 +220,11 @@ func (s *dbusSession) start(ctx context.Context) error {
 	return nil
 }
 
-func (s *dbusSession) stop() {
-	// Background context so VerifyStop runs even after the caller's ctx expires;
-	// fprintd requires it before the next VerifyStart or Release.
-	s.dev.Call(deviceIface+".VerifyStop", 0)
+func (s *dbusSession) stop(ctx context.Context) error {
+	if call := s.dev.CallWithContext(ctx, deviceIface+".VerifyStop", 0); call.Err != nil {
+		return fmt.Errorf("verify stop: %w", call.Err)
+	}
+	return nil
 }
 
 func (s *dbusSession) next(ctx context.Context) (string, error) {
@@ -215,8 +232,11 @@ func (s *dbusSession) next(ctx context.Context) (string, error) {
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
-		case sig := <-s.sigCh:
-			if sig == nil || sig.Path != s.devPath {
+		case sig, ok := <-s.sigCh:
+			if !ok || sig == nil {
+				return "", errSignalStreamClosed
+			}
+			if sig.Path != s.devPath {
 				continue
 			}
 			if sig.Name != sigVerifyStatus || len(sig.Body) != 2 {

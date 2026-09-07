@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/godbus/dbus/v5"
 )
 
 func TestClassifyResult(t *testing.T) {
@@ -47,6 +49,7 @@ type fakeSession struct {
 	i          int
 	startCount int
 	stopCount  int
+	stopErr    error
 }
 
 func (f *fakeSession) start(ctx context.Context) error {
@@ -54,8 +57,9 @@ func (f *fakeSession) start(ctx context.Context) error {
 	return nil
 }
 
-func (f *fakeSession) stop() {
+func (f *fakeSession) stop(context.Context) error {
 	f.stopCount++
+	return f.stopErr
 }
 
 func (f *fakeSession) next(ctx context.Context) (string, error) {
@@ -151,6 +155,15 @@ func TestVerifyStreamErrorPropagates(t *testing.T) {
 	}
 }
 
+func TestVerifyStopErrorPropagates(t *testing.T) {
+	sentinel := errors.New("stop failed")
+	f := &fakeSession{steps: []step{{result: "verify-match"}}, stopErr: sentinel}
+
+	if err := verify(context.Background(), f, nil); !errors.Is(err, sentinel) {
+		t.Fatalf("verify error = %v, want %v", err, sentinel)
+	}
+}
+
 func TestVerifyContextCancel(t *testing.T) {
 	f := &fakeSession{} // no scripted steps: next blocks on ctx
 	ctx, cancel := context.WithCancel(context.Background())
@@ -162,5 +175,25 @@ func TestVerifyContextCancel(t *testing.T) {
 	}
 	if f.stopCount == 0 {
 		t.Error("verify should stop the attempt on cancellation")
+	}
+}
+
+func TestSignalStreamClosureReturnsError(t *testing.T) {
+	signals := make(chan *dbus.Signal)
+	close(signals)
+	session := &dbusSession{devPath: "/test", sigCh: signals}
+
+	if _, err := session.next(context.Background()); !errors.Is(err, errSignalStreamClosed) {
+		t.Fatalf("next error = %v, want %v", err, errSignalStreamClosed)
+	}
+}
+
+func TestNilSignalReturnsError(t *testing.T) {
+	signals := make(chan *dbus.Signal, 1)
+	signals <- nil
+	session := &dbusSession{devPath: "/test", sigCh: signals}
+
+	if _, err := session.next(context.Background()); !errors.Is(err, errSignalStreamClosed) {
+		t.Fatalf("next error = %v, want %v", err, errSignalStreamClosed)
 	}
 }

@@ -61,7 +61,7 @@ func (f *fakeNotifier) all() []notification {
 	return out
 }
 
-func waitResult(t *testing.T, ch chan Result) Result {
+func waitResult(t *testing.T, ch <-chan Result) Result {
 	t.Helper()
 	select {
 	case r := <-ch:
@@ -246,5 +246,72 @@ func TestConfirmPresenceRejectsConcurrentDifferentRequest(t *testing.T) {
 	close(release)
 	if r := waitResult(t, ch1); !r.OK {
 		t.Fatalf("expected first request to succeed, got %v", r.Error)
+	}
+}
+
+func TestIdenticalConcurrentRequestsBothReceiveResult(t *testing.T) {
+	release := make(chan struct{})
+	up := &UserPresence{
+		newVerifier: func() (Verifier, error) {
+			return &fakeVerifier{verifyFunc: func(context.Context, string, func(string)) error {
+				<-release
+				return nil
+			}}, nil
+		},
+		newNotifier: func() (Notifier, error) { return &fakeNotifier{}, nil },
+	}
+	challenge, application := [32]byte{1}, [32]byte{2}
+	first, err := up.ConfirmPresence("Register", challenge, application)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := up.ConfirmPresence("Register", challenge, application)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("duplicate callers share one result channel")
+	}
+	close(release)
+	for i, result := range []Result{waitResult(t, first), waitResult(t, second)} {
+		if !result.OK {
+			t.Fatalf("caller %d: %v", i+1, result.Error)
+		}
+	}
+}
+
+func TestIdenticalRequestExtendsTimeout(t *testing.T) {
+	release := make(chan struct{})
+	up := &UserPresence{
+		requestTimeout: 80 * time.Millisecond,
+		newVerifier: func() (Verifier, error) {
+			return &fakeVerifier{verifyFunc: func(ctx context.Context, _ string, _ func(string)) error {
+				select {
+				case <-release:
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}}, nil
+		},
+		newNotifier: func() (Notifier, error) { return &fakeNotifier{}, nil },
+	}
+	challenge, application := [32]byte{1}, [32]byte{2}
+	first, err := up.ConfirmPresence("Register", challenge, application)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	second, err := up.ConfirmPresence("Register", challenge, application)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	if result := waitResult(t, first); !result.OK {
+		t.Fatalf("first caller timed out despite extension: %v", result.Error)
+	}
+	if result := waitResult(t, second); !result.OK {
+		t.Fatalf("second caller timed out despite extension: %v", result.Error)
 	}
 }
