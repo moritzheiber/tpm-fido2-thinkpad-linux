@@ -6,6 +6,7 @@ case "$1" in
     if [ -d /run/udev ] && command -v udevadm >/dev/null 2>&1; then
       udevadm control --reload-rules || true
       udevadm trigger --subsystem-match=misc --action=change || true
+      udevadm trigger --subsystem-match=tpmrm --action=change || true
     fi
     if command -v modprobe >/dev/null 2>&1; then
       modprobe uhid || true

@@ -171,28 +171,3 @@ func (h *Handler) GetECDHPublicKey() (*COSEKey, error) {
 		Y:   padTo32(h.ecdhKey.Y.Bytes()),
 	}, nil
 }
-
-// ComputePRF computes PRF outputs directly for a credential.
-// This is used for PRF-during-create where we control both ends and don't need ECDH.
-// salt1 and salt2 should be 32 bytes each (salt2 is optional).
-func (h *Handler) ComputePRF(credentialID, salt1, salt2 []byte) (output1, output2 []byte, err error) {
-	// Get credential random from signer
-	credRandom, err := h.signer.DeriveCredRandom(credentialID)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// Compute HMAC-SHA256(credRandom, salt1)
-	hmacOut1 := hmac.New(sha256.New, credRandom)
-	hmacOut1.Write(salt1)
-	output1 = hmacOut1.Sum(nil)
-
-	// Compute HMAC-SHA256(credRandom, salt2) if provided
-	if len(salt2) > 0 {
-		hmacOut2 := hmac.New(sha256.New, credRandom)
-		hmacOut2.Write(salt2)
-		output2 = hmacOut2.Sum(nil)
-	}
-
-	return output1, output2, nil
-}

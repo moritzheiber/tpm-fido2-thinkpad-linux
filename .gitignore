@@ -1,7 +1,4 @@
 tpm-fido
-tpmfido
-tpm-fido-static
-dist/
 build/
 vendor/
 _build/

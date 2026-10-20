@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -15,52 +14,32 @@ import (
 
 	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/ctap2"
 	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/fidohid"
-	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/memory"
-	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/nativemsg"
 	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/tpm"
 	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/tray"
 	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/usbmon"
 	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/userpresence"
-	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/webauthn"
 )
 
 var (
-	backend    = flag.String("backend", "tpm", "Backend to use: tpm or memory")
 	device     = flag.String("device", "/dev/tpmrm0", "TPM device path")
-	mode       = flag.String("mode", "native", "Operating mode: native (Chrome extension) or daemon (virtual HID device)")
-	showTray   = flag.Bool("tray", false, "Show system tray icon for toggling the virtual device (daemon mode only)")
+	showTray   = flag.Bool("tray", false, "Show system tray icon for toggling the virtual device")
 	autoSwitch = flag.Bool("auto-switch", true, "Automatically disable virtual key when a YubiKey is plugged in (tray mode only)")
 )
 
 func main() {
 	flag.Parse()
 
-	// Set up logging to stderr (Native Messaging uses stdout for communication)
+	// Keep operational logs on stderr for systemd-journald.
 	log.SetOutput(os.Stderr)
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
-	log.Printf("tpm-fido starting with backend=%s mode=%s", *backend, *mode)
+	log.Printf("tpm-fido starting")
 
-	// Initialize the signer backend
-	var signer ctap2.Signer
-	var err error
-
-	switch *backend {
-	case "tpm":
-		signer, err = tpm.New(*device)
-		if err != nil {
-			log.Fatalf("Failed to initialize TPM backend: %v", err)
-		}
-		log.Printf("TPM backend initialized using %s", *device)
-	case "memory":
-		signer, err = memory.New()
-		if err != nil {
-			log.Fatalf("Failed to initialize memory backend: %v", err)
-		}
-		log.Printf("Memory backend initialized (for testing only)")
-	default:
-		log.Fatalf("Unknown backend: %s (use 'tpm' or 'memory')", *backend)
+	signer, err := tpm.New(*device)
+	if err != nil {
+		log.Fatalf("Failed to initialize TPM backend: %v", err)
 	}
+	log.Printf("TPM backend initialized using %s", *device)
 
 	// Initialize user presence handler
 	presence := userpresence.New()
@@ -81,32 +60,6 @@ func main() {
 	// Create CTAP2 handler
 	ctap2Handler := ctap2.NewHandler(signer, presence, storage)
 	log.Printf("CTAP2 handler initialized")
-
-	switch *mode {
-	case "native":
-		runNativeMode(ctap2Handler)
-	case "daemon":
-		runDaemonMode(ctap2Handler)
-	default:
-		log.Fatalf("Unknown mode: %s (use 'native' or 'daemon')", *mode)
-	}
-}
-
-// runNativeMode runs as a Chrome Native Messaging host
-func runNativeMode(ctap2Handler *ctap2.Handler) {
-	ctap2Handler.IsPlatform = true
-
-	handler := webauthn.NewHandler(ctap2Handler)
-	log.Printf("WebAuthn handler initialized")
-
-	ctx := context.Background()
-	runNativeMessaging(ctx, handler)
-}
-
-// runDaemonMode creates a virtual FIDO2 HID device and handles CTAPHID traffic.
-// If --tray is set, it also shows a system tray icon for toggling the device.
-func runDaemonMode(ctap2Handler *ctap2.Handler) {
-	ctap2Handler.IsPlatform = false
 
 	if *showTray {
 		runDaemonWithTray(ctap2Handler)
@@ -313,35 +266,4 @@ func deviceRunError(err error) error {
 		return nil
 	}
 	return err
-}
-
-// runNativeMessaging runs the Native Messaging I/O loop
-func runNativeMessaging(ctx context.Context, handler *webauthn.Handler) {
-	log.Printf("Starting Native Messaging loop")
-
-	for {
-		// Read request from stdin
-		msg, err := nativemsg.Read(os.Stdin)
-		if err != nil {
-			if err == io.EOF {
-				log.Printf("Extension closed connection (EOF)")
-				return
-			}
-			log.Printf("Read error: %v", err)
-			return
-		}
-
-		log.Printf("Received message: %d bytes", len(msg))
-
-		// Handle the request
-		response := handler.HandleRequest(ctx, msg)
-
-		// Write response to stdout
-		if err := nativemsg.Write(os.Stdout, response); err != nil {
-			log.Printf("Write error: %v", err)
-			return
-		}
-
-		log.Printf("Response sent")
-	}
 }

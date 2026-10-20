@@ -7,20 +7,15 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 )
 
 // CredentialMetadata stores resident key credential information
 type CredentialMetadata struct {
-	RPID            string    `json:"rp_id"`
-	RPName          string    `json:"rp_name,omitempty"`
-	UserID          []byte    `json:"user_id"`
-	UserName        string    `json:"user_name,omitempty"`
-	UserDisplayName string    `json:"user_display_name,omitempty"`
-	CredentialID    []byte    `json:"credential_id"`
-	PublicKeyX      []byte    `json:"public_key_x"`
-	PublicKeyY      []byte    `json:"public_key_y"`
-	CreatedAt       time.Time `json:"created_at"`
+	RPID            string `json:"rp_id"`
+	UserID          []byte `json:"user_id"`
+	UserName        string `json:"user_name,omitempty"`
+	UserDisplayName string `json:"user_display_name,omitempty"`
+	CredentialID    []byte `json:"credential_id"`
 }
 
 // CredentialStorage manages persistent storage of resident credentials
@@ -29,17 +24,15 @@ type CredentialStorage struct {
 	filePath    string
 	credentials []*CredentialMetadata
 	// In-memory indexes for fast lookup
-	byRPID         map[string][]*CredentialMetadata
-	byCredentialID map[string]*CredentialMetadata
+	byRPID map[string][]*CredentialMetadata
 }
 
 // NewCredentialStorage creates a new credential storage at the given path
 func NewCredentialStorage(filePath string) (*CredentialStorage, error) {
 	cs := &CredentialStorage{
-		filePath:       filePath,
-		credentials:    make([]*CredentialMetadata, 0),
-		byRPID:         make(map[string][]*CredentialMetadata),
-		byCredentialID: make(map[string]*CredentialMetadata),
+		filePath:    filePath,
+		credentials: make([]*CredentialMetadata, 0),
+		byRPID:      make(map[string][]*CredentialMetadata),
 	}
 
 	// Ensure directory exists
@@ -97,11 +90,9 @@ func (cs *CredentialStorage) save() error {
 // rebuildIndexes rebuilds the in-memory lookup indexes
 func (cs *CredentialStorage) rebuildIndexes() {
 	cs.byRPID = make(map[string][]*CredentialMetadata)
-	cs.byCredentialID = make(map[string]*CredentialMetadata)
 
 	for _, cred := range cs.credentials {
 		cs.byRPID[cred.RPID] = append(cs.byRPID[cred.RPID], cred)
-		cs.byCredentialID[string(cred.CredentialID)] = cred
 	}
 }
 
@@ -154,58 +145,10 @@ func (cs *CredentialStorage) GetByRPID(rpId string) []*CredentialMetadata {
 	return result
 }
 
-// GetByCredentialID returns a credential by its ID
-func (cs *CredentialStorage) GetByCredentialID(credId []byte) *CredentialMetadata {
-	cs.mu.RLock()
-	defer cs.mu.RUnlock()
-
-	return cs.byCredentialID[string(credId)]
-}
-
-// Delete removes a credential by its ID
-func (cs *CredentialStorage) Delete(credId []byte) error {
-	cs.mu.Lock()
-	defer cs.mu.Unlock()
-
-	key := string(credId)
-	if _, exists := cs.byCredentialID[key]; !exists {
-		return nil // Already deleted or never existed
-	}
-
-	// Remove from slice
-	newCreds := make([]*CredentialMetadata, 0, len(cs.credentials)-1)
-	for _, cred := range cs.credentials {
-		if !bytes.Equal(cred.CredentialID, credId) {
-			newCreds = append(newCreds, cred)
-		}
-	}
-	cs.credentials = newCreds
-
-	cs.rebuildIndexes()
-
-	if err := cs.save(); err != nil {
-		log.Printf("CredentialStorage: Failed to save after delete: %v", err)
-		return err
-	}
-
-	log.Printf("CredentialStorage: Deleted credential")
-	return nil
-}
-
 // Count returns the number of stored credentials
 func (cs *CredentialStorage) Count() int {
 	cs.mu.RLock()
 	defer cs.mu.RUnlock()
 
 	return len(cs.credentials)
-}
-
-// GetAll returns all stored credentials (for debugging/management)
-func (cs *CredentialStorage) GetAll() []*CredentialMetadata {
-	cs.mu.RLock()
-	defer cs.mu.RUnlock()
-
-	result := make([]*CredentialMetadata, len(cs.credentials))
-	copy(result, cs.credentials)
-	return result
 }

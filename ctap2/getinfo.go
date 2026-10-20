@@ -1,17 +1,7 @@
 package ctap2
 
-// GetInfo returns the authenticator capabilities.
-// The response varies based on IsPlatform: platform authenticators report
-// plat=true with internal transport, while HID authenticators report
-// plat=false with usb transport.
+// GetInfo returns the virtual HID authenticator capabilities.
 func (h *Handler) GetInfo() *GetInfoResponse {
-	transport := "usb"
-	plat := false
-	if h.IsPlatform {
-		transport = "internal"
-		plat = true
-	}
-
 	return &GetInfoResponse{
 		// Supported protocol versions
 		Versions: []string{"FIDO_2_0", "FIDO_2_1"},
@@ -27,7 +17,7 @@ func (h *Handler) GetInfo() *GetInfoResponse {
 			"rk":   true, // Resident keys supported (stored in ~/.local/share/tpm-fido/)
 			"up":   true, // User presence supported via fingerprint
 			"uv":   true, // User verification via fingerprint (enables hmac-secret without PIN)
-			"plat": plat, // Platform vs roaming authenticator
+			"plat": false,
 		},
 
 		// Maximum message size
@@ -44,7 +34,7 @@ func (h *Handler) GetInfo() *GetInfoResponse {
 		MaxCredentialIdLength: 256,
 
 		// Transport depends on operating mode
-		Transports: []string{transport},
+		Transports: []string{"usb"},
 
 		// Supported algorithms
 		Algorithms: []PublicKeyCredentialParameters{

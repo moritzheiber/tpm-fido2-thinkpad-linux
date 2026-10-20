@@ -27,4 +27,4 @@ Description: virtual FIDO2 security key backed by TPM 2.0 and a fingerprint read
  .
  Private keys are generated and stored in the TPM 2.0. User verification is
  performed with the fingerprint reader through fprintd. The daemon is provided
- as a systemd user service that runs in daemon mode with a system tray icon.
+ as a systemd user service with an optional system tray icon.

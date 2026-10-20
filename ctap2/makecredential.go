@@ -2,15 +2,11 @@ package ctap2
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/rand"
 	"crypto/sha256"
 	"log"
-	"math/big"
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
-	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/attestation"
 )
 
 // MakeCredential handles the authenticatorMakeCredential command
@@ -35,31 +31,29 @@ func (h *Handler) MakeCredential(ctx context.Context, req *MakeCredentialRequest
 	}
 	if !es256Supported {
 		log.Printf("CTAP2 MakeCredential: ES256 not in requested algorithms")
-		return StatusUnsupportedExtension, nil // Actually should be unsupported algorithm
+		return StatusUnsupportedAlgorithm, nil
 	}
 
-	// Check excludeList for existing credentials
 	rpIDHash := HashRPID(req.RP.ID)
-	for _, excluded := range req.ExcludeList {
-		// Try to verify if this credential exists by attempting to sign
-		dummyHash := sha256.Sum256([]byte("exclude-check"))
-		_, err := h.signer.SignASN1(excluded.ID, rpIDHash[:], dummyHash[:])
-		if err == nil {
-			// Credential exists and is valid - need user presence to confirm exclusion
-			log.Printf("CTAP2 MakeCredential: Credential in excludeList exists")
-			return StatusCredentialExcluded, nil
-		}
-	}
 
 	// Request user presence
 	var challengeParam, appParam [32]byte
 	copy(challengeParam[:], req.ClientDataHash)
 	copy(appParam[:], rpIDHash[:])
 
-	pinResultCh, err := h.presence.ConfirmPresence("FIDO2 Confirm Register", challengeParam, appParam)
+	pinResultCh, err := h.presence.ConfirmPresence(RegistrationPrompt(req.RP.Name, req.RP.ID), challengeParam, appParam)
 	if err != nil {
 		log.Printf("CTAP2 MakeCredential: user presence error: %s", err)
 		return StatusOperationDenied, nil
+	}
+
+	// Credential existence is checked only after user consent.
+	for _, excluded := range req.ExcludeList {
+		dummyHash := sha256.Sum256([]byte("exclude-check"))
+		if _, err := h.signer.SignASN1(excluded.ID, rpIDHash[:], dummyHash[:]); err == nil {
+			log.Printf("CTAP2 MakeCredential: Credential in excludeList exists")
+			return StatusCredentialExcluded, nil
+		}
 	}
 
 	// Wait for user response with timeout
@@ -98,14 +92,10 @@ func (h *Handler) MakeCredential(ctx context.Context, req *MakeCredentialRequest
 	if residentKeyRequested && h.storage != nil {
 		cred := &CredentialMetadata{
 			RPID:            req.RP.ID,
-			RPName:          req.RP.Name,
 			UserID:          req.User.ID,
 			UserName:        req.User.Name,
 			UserDisplayName: req.User.DisplayName,
 			CredentialID:    credentialID,
-			PublicKeyX:      bigIntToBytes(x),
-			PublicKeyY:      bigIntToBytes(y),
-			CreatedAt:       time.Now(),
 		}
 		if err := h.storage.Save(cred); err != nil {
 			log.Printf("CTAP2 MakeCredential: Failed to save resident credential: %s", err)
@@ -152,28 +142,11 @@ func (h *Handler) MakeCredential(ctx context.Context, req *MakeCredentialRequest
 
 	authDataBytes := authData.Marshal()
 
-	// Build attestation signature: sign(authData || clientDataHash)
-	toSign := append(authDataBytes, req.ClientDataHash...)
-	sigHash := sha256.Sum256(toSign)
-
-	sig, err := ecdsa.SignASN1(rand.Reader, attestation.PrivateKey, sigHash[:])
-	if err != nil {
-		log.Printf("CTAP2 MakeCredential: Attestation sign error: %s", err)
-		return StatusOther, nil
-	}
-
-	// Build attestation statement (packed format with x5c)
-	attStmt := map[string]interface{}{
-		"alg": COSEAlgES256,
-		"sig": sig,
-		"x5c": [][]byte{attestation.CertDer},
-	}
-
 	// Build response
 	resp := &MakeCredentialResponse{
-		Fmt:      "packed",
+		Fmt:      "none",
 		AuthData: authDataBytes,
-		AttStmt:  attStmt,
+		AttStmt:  map[string]interface{}{},
 	}
 
 	encoded, err := ctapEncMode.Marshal(resp)
@@ -193,157 +166,4 @@ func parseMakeCredentialRequest(data []byte) (*MakeCredentialRequest, error) {
 		return nil, err
 	}
 	return &req, nil
-}
-
-// bigIntToBytes converts a big.Int to a fixed 32-byte slice (for P-256 coordinates)
-func bigIntToBytes(n *big.Int) []byte {
-	b := n.Bytes()
-	// Pad to 32 bytes if needed
-	if len(b) < 32 {
-		padded := make([]byte, 32)
-		copy(padded[32-len(b):], b)
-		return padded
-	}
-	return b
-}
-
-// MakeCredentialParams contains the parameters for MakeCredentialDirect
-type MakeCredentialParams struct {
-	ClientDataHash  []byte
-	RPID            string
-	RPName          string
-	UserID          []byte
-	UserName        string
-	UserDisplayName string
-	ResidentKey     bool   // Whether to store as resident key
-	HmacSecret      bool   // Whether hmac-secret extension was requested
-	ExcludeList     [][]byte // List of credential IDs to exclude
-}
-
-// MakeCredentialDirect creates a credential without user presence handling.
-// The caller is responsible for confirming user presence before calling this method.
-// This method is designed for Native Messaging where the webauthn handler controls the flow.
-func (h *Handler) MakeCredentialDirect(ctx context.Context, params *MakeCredentialParams) (*MakeCredentialResult, error) {
-	log.Printf("CTAP2 MakeCredentialDirect: RP=%s, User=%s, ResidentKey=%v", params.RPID, params.UserName, params.ResidentKey)
-
-	// Validate clientDataHash
-	if len(params.ClientDataHash) != 32 {
-		return nil, ErrInvalidParameter
-	}
-
-	// Compute rpIdHash
-	rpIDHash := HashRPID(params.RPID)
-
-	// Check excludeList for existing credentials
-	for _, excludedID := range params.ExcludeList {
-		// Try to verify if this credential exists by attempting to sign
-		dummyHash := sha256.Sum256([]byte("exclude-check"))
-		_, err := h.signer.SignASN1(excludedID, rpIDHash[:], dummyHash[:])
-		if err == nil {
-			// Credential exists and is valid
-			log.Printf("CTAP2 MakeCredentialDirect: Credential in excludeList exists")
-			return nil, ErrCredentialExcluded
-		}
-	}
-
-	// Generate credential
-	credentialID, x, y, err := h.signer.RegisterKey(rpIDHash[:])
-	if err != nil {
-		log.Printf("CTAP2 MakeCredentialDirect: RegisterKey error: %s", err)
-		return nil, err
-	}
-
-	log.Printf("CTAP2 MakeCredentialDirect: Generated credential, ID length=%d, residentKey=%v", len(credentialID), params.ResidentKey)
-
-	// Save resident credential if requested
-	if params.ResidentKey && h.storage != nil {
-		cred := &CredentialMetadata{
-			RPID:            params.RPID,
-			RPName:          params.RPName,
-			UserID:          params.UserID,
-			UserName:        params.UserName,
-			UserDisplayName: params.UserDisplayName,
-			CredentialID:    credentialID,
-			PublicKeyX:      bigIntToBytes(x),
-			PublicKeyY:      bigIntToBytes(y),
-			CreatedAt:       time.Now(),
-		}
-		if err := h.storage.Save(cred); err != nil {
-			log.Printf("CTAP2 MakeCredentialDirect: Failed to save resident credential: %s", err)
-			// Continue anyway - the credential is still valid, just not discoverable
-		}
-	}
-
-	// Build COSE public key
-	coseKey, err := BuildCOSEPublicKeyES256(x, y)
-	if err != nil {
-		log.Printf("CTAP2 MakeCredentialDirect: COSE key build error: %s", err)
-		return nil, err
-	}
-
-	// Build extensions output if hmac-secret was requested
-	var extensionsOutput []byte
-	if params.HmacSecret {
-		extMap := map[string]bool{"hmac-secret": true}
-		extensionsOutput, _ = ctapEncMode.Marshal(extMap)
-	}
-
-	// Build flags
-	flags := byte(FlagUserPresent | FlagUserVerified | FlagAttestedCredData)
-	if params.HmacSecret {
-		flags |= FlagExtensionData
-	}
-
-	// Build AuthenticatorData
-	authData := &AuthenticatorData{
-		RPIDHash:  rpIDHash,
-		Flags:     flags,
-		SignCount: h.signer.Counter(),
-		AttestedCredentialData: &AttestedCredentialData{
-			AAGUID:              h.aaguid,
-			CredentialID:        credentialID,
-			CredentialPublicKey: coseKey,
-		},
-		Extensions: extensionsOutput,
-	}
-
-	authDataBytes := authData.Marshal()
-
-	// Build attestation signature: sign(authData || clientDataHash)
-	toSign := append(authDataBytes, params.ClientDataHash...)
-	sigHash := sha256.Sum256(toSign)
-
-	sig, err := ecdsa.SignASN1(rand.Reader, attestation.PrivateKey, sigHash[:])
-	if err != nil {
-		log.Printf("CTAP2 MakeCredentialDirect: Attestation sign error: %s", err)
-		return nil, err
-	}
-
-	// Build attestation object (CBOR-encoded)
-	attObj := map[string]interface{}{
-		"fmt":      "packed",
-		"authData": authDataBytes,
-		"attStmt": map[string]interface{}{
-			"alg": COSEAlgES256,
-			"sig": sig,
-			"x5c": [][]byte{attestation.CertDer},
-		},
-	}
-
-	attestationObject, err := ctapEncMode.Marshal(attObj)
-	if err != nil {
-		log.Printf("CTAP2 MakeCredentialDirect: Attestation object encode error: %s", err)
-		return nil, err
-	}
-
-	log.Printf("CTAP2 MakeCredentialDirect: Success, credentialID=%d bytes, attestationObject=%d bytes", len(credentialID), len(attestationObject))
-
-	return &MakeCredentialResult{
-		CredentialID:      credentialID,
-		AttestationObject: attestationObject,
-		AuthData:          authDataBytes,
-		PublicKeyX:        x,
-		PublicKeyY:        y,
-		HmacSecretEnabled: params.HmacSecret,
-	}, nil
 }

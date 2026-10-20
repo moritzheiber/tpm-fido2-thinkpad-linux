@@ -1,5 +1,6 @@
-# Allow user access to /dev/uhid for creating virtual HID devices
-KERNEL=="uhid", MODE="0660", GROUP="plugdev"
+# Grant the active local desktop session access to the TPM and UHID devices.
+KERNEL=="uhid", SUBSYSTEM=="misc", TAG+="uaccess"
+KERNEL=="tpmrm[0-9]*", SUBSYSTEM=="tpmrm", TAG+="uaccess"
 
 # Tag virtual FIDO2 hidraw device for snap browser access.
 # uhid devices don't have USB-style idVendor/idProduct sysfs attrs,

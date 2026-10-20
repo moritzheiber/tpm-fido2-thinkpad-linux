@@ -5,4 +5,4 @@ tpm-fido: statically-linked-binary [usr/bin/tpm-fido]
 # The udev rule governs the self-created virtual /dev/uhid device and tags the
 # virtual FIDO2 hidraw node for snap browsers. There is no physical hardware
 # modalias to advertise through AppStream.
-tpm-fido: appstream-metadata-missing-modalias-provide usr/lib/udev/rules.d/90-tpm-fido-uhid.rules
+tpm-fido: appstream-metadata-missing-modalias-provide usr/lib/udev/rules.d/60-tpm-fido-uhid.rules

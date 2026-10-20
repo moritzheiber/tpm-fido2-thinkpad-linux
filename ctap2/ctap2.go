@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/sha256"
-	"errors"
 	"log"
 	"math/big"
 
@@ -12,7 +11,7 @@ import (
 	"github.com/moritzheiber/tpm-fido2-thinkpad-linux/userpresence"
 )
 
-// Signer is the interface that the TPM or memory backend must implement
+// Signer is the TPM-backed credential interface used by CTAP2.
 type Signer interface {
 	RegisterKey(applicationParam []byte) ([]byte, *big.Int, *big.Int, error)
 	SignASN1(keyHandle, applicationParam, digest []byte) ([]byte, error)
@@ -20,49 +19,17 @@ type Signer interface {
 	DeriveCredRandom(credentialID []byte) ([]byte, error)
 }
 
-// MakeCredentialResult contains the result of a successful MakeCredential operation
-type MakeCredentialResult struct {
-	CredentialID      []byte
-	AttestationObject []byte // CBOR-encoded attestation object (for WebAuthn response)
-	AuthData          []byte // Raw authenticator data bytes
-	PublicKeyX        *big.Int
-	PublicKeyY        *big.Int
-	HmacSecretEnabled bool
+type Presence interface {
+	ConfirmPresence(prompt string, challengeParam, applicationParam [32]byte) (chan userpresence.Result, error)
 }
-
-// GetAssertionResult contains the result of a successful GetAssertion operation
-type GetAssertionResult struct {
-	CredentialID      []byte
-	AuthenticatorData []byte
-	Signature         []byte
-	UserHandle        []byte // For discoverable credentials
-	UserName          string // For discoverable credentials
-	UserDisplayName   string // For discoverable credentials
-	HmacSecretOutput  []byte // Encrypted hmac-secret output if extension was processed
-}
-
-// Common errors for Native Messaging
-var (
-	ErrCredentialExcluded  = errors.New("credential already registered")
-	ErrNoCredentials       = errors.New("no credentials found")
-	ErrUserDenied          = errors.New("user denied the request")
-	ErrTimeout             = errors.New("operation timed out")
-	ErrUnsupportedAlgorithm = errors.New("unsupported algorithm")
-	ErrInvalidParameter    = errors.New("invalid parameter")
-)
 
 // Handler handles CTAP2 commands
 type Handler struct {
 	signer   Signer
-	presence *userpresence.UserPresence
+	presence Presence
 	storage  *CredentialStorage
 	aaguid   [16]byte
 	ecdhKey  *ecdsa.PrivateKey // Ephemeral key for hmac-secret
-
-	// IsPlatform controls GetInfo response:
-	//   true  = platform authenticator (plat=true, transports=["internal"])
-	//   false = roaming authenticator via HID (plat=false, transports=["usb"])
-	IsPlatform bool
 
 	// State for GetNextAssertion
 	assertionState *assertionState
@@ -78,7 +45,7 @@ type assertionState struct {
 }
 
 // NewHandler creates a new CTAP2 command handler
-func NewHandler(signer Signer, presence *userpresence.UserPresence, storage *CredentialStorage) *Handler {
+func NewHandler(signer Signer, presence Presence, storage *CredentialStorage) *Handler {
 	// Generate AAGUID from SHA256("tpm-fido-prf")[:16]
 	hash := sha256.Sum256([]byte("tpm-fido-prf"))
 	var aaguid [16]byte
@@ -90,26 +57,6 @@ func NewHandler(signer Signer, presence *userpresence.UserPresence, storage *Cre
 		storage:  storage,
 		aaguid:   aaguid,
 	}
-}
-
-// Signer returns the signer backend for direct access (used for PRF-during-create)
-func (h *Handler) Signer() Signer {
-	return h.signer
-}
-
-// Presence returns the user presence handler
-func (h *Handler) Presence() *userpresence.UserPresence {
-	return h.presence
-}
-
-// Storage returns the credential storage
-func (h *Handler) Storage() *CredentialStorage {
-	return h.storage
-}
-
-// AAGUID returns the authenticator's AAGUID
-func (h *Handler) AAGUID() [16]byte {
-	return h.aaguid
 }
 
 // HandleCommand dispatches a CTAP2 command and returns the status and response

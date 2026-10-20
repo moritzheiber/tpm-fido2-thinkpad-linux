@@ -9,7 +9,7 @@ The daemon creates a virtual FIDO2 HID device via `/dev/uhid` that browsers disc
 - **Lenovo ThinkPad P14s Gen 5** (AMD)
   - Fingerprint reader: Synaptics 06cb:00f9 (via fprintd)
   - TPM: AMD TPM 2.0 (`/dev/tpmrm0`)
-  - OS: Ubuntu 24.04+, Linux 6.14
+  - OS: Ubuntu 26.04, Linux 7.0
 
 Other laptops with a TPM 2.0 and an fprintd-compatible fingerprint reader should work as well.
 
@@ -30,16 +30,11 @@ Other laptops with a TPM 2.0 and an fprintd-compatible fingerprint reader should
 ```bash
 git clone https://github.com/moritzheiber/tpm-fido2-thinkpad-linux.git
 cd tpm-fido2-thinkpad-linux
-./contrib/install-daemon.sh
+./packaging/build-deb.sh
+sudo apt install ./build/deb/tpm-fido_*.deb
+fprintd-enroll
+systemctl --user enable --now tpm-fido
 ```
-
-The installer will:
-1. Check prerequisites (Go, TPM, fprintd)
-2. Build a static binary and install it to `~/bin/tpm-fido`
-3. Install a systemd user service
-4. Set up udev rules and load the `uhid` kernel module (requires sudo)
-5. Detect installed browsers and connect snap interfaces as needed
-6. Start the virtual security key daemon
 
 After installation, open your browser and test at [webauthn.io](https://webauthn.io).
 
@@ -71,7 +66,7 @@ The package declares its dependencies so `apt` installs them automatically.
 
 **Depends** (required, installed automatically)
 - `fprintd` provides the fingerprint service used over D-Bus
-- `tpm-udev` creates the `tss` group and grants that group access to `/dev/tpmrm0`
+- `tpm-udev` provides the standard TPM device rules
 - `kmod` and `udev` load the `uhid` module and reload the device rules during installation
 
 **Recommends** (optional, and installed by default on a normal desktop)
@@ -79,17 +74,9 @@ The package declares its dependencies so `apt` installs them automatically.
 
 ### After installation
 
-The daemon runs as a systemd user service inside your own desktop session, so fingerprint verification and desktop notifications use your session and your enrolled fingerprints. The service is installed without being enabled, so it starts only once you enable it for your user.
+The package grants the active desktop user access to `/dev/tpmrm0` and `/dev/uhid` through logind `uaccess` ACLs. No permanent group membership is required. The service is installed without being enabled.
 
 ```bash
-# Grant TPM access (the tss group owns /dev/tpmrm0)
-sudo usermod -aG tss $USER
-
-# Grant /dev/uhid access
-sudo usermod -aG plugdev $USER
-
-# Log out and back in for the group changes to take effect
-
 # Enroll a fingerprint if you have not already
 fprintd-enroll
 
@@ -97,7 +84,7 @@ fprintd-enroll
 systemctl --user enable --now tpm-fido
 ```
 
-The package sets up daemon mode, which works with Chromium, Firefox, and Google Chrome without a browser extension. The native messaging integration for the Chrome extension is a separate manual setup described under [Manual Installation](#manual-installation).
+The daemon works with Chromium, Firefox, and Google Chrome without a browser extension.
 
 ## Prerequisites
 
@@ -105,21 +92,6 @@ The package sets up daemon mode, which works with Chromium, Firefox, and Google 
 - **Fingerprint reader**: Compatible with fprintd, with at least one finger enrolled
 - **Go 1.25+**: Required to build from source
 - **Linux kernel**: `uhid` module (loaded automatically by the installer)
-
-### User Setup
-
-```bash
-# Grant TPM access
-sudo usermod -aG tss $USER
-
-# Grant uhid access
-sudo usermod -aG plugdev $USER
-
-# Log out and back in for group changes to take effect
-
-# Enroll a fingerprint (if not already done)
-fprintd-enroll
-```
 
 ## System Tray Icon
 
@@ -136,12 +108,12 @@ When a physical YubiKey (Yubico VID `1050`) is plugged in, the daemon automatica
 
 To start with auto-switch disabled:
 ```bash
-tpm-fido --mode=daemon --tray --auto-switch=false
+tpm-fido --tray --auto-switch=false
 ```
 
 To run without the tray icon (headless):
 ```bash
-tpm-fido --mode=daemon
+tpm-fido
 ```
 
 ## Architecture
@@ -162,34 +134,6 @@ Browser (Chromium/Firefox/Chrome)
 ```
 
 The daemon runs outside any browser sandbox, so it has full access to the TPM and fingerprint reader. Browsers discover the virtual HID device through standard OS mechanisms — the same way they find a physical YubiKey.
-
-## Manual Installation
-
-If you prefer to install step by step instead of using the installer script:
-
-```bash
-# Build
-CGO_ENABLED=0 go build -ldflags="-s -w" -o tpm-fido tpmfido.go
-
-# Install binary
-install -m 755 tpm-fido ~/bin/tpm-fido
-
-# Install systemd service
-install -m 644 contrib/tpm-fido.service ~/.config/systemd/user/tpm-fido.service
-
-# Install udev rules and uhid module config (requires sudo)
-sudo cp contrib/90-tpm-fido-uhid.rules /etc/udev/rules.d/
-sudo cp contrib/uhid.conf /etc/modules-load.d/
-sudo udevadm control --reload-rules && sudo udevadm trigger
-sudo modprobe uhid
-
-# Connect snap interfaces (if using snap browsers)
-sudo snap connect chromium:u2f-devices   # for Chromium snap
-sudo snap connect firefox:u2f-devices    # for Firefox snap
-
-# Start the service
-systemctl --user enable --now tpm-fido
-```
 
 ## Usage
 
@@ -212,7 +156,7 @@ systemctl --user restart tpm-fido
 1. Browser sends a WebAuthn create request to the virtual HID device
 2. Daemon generates a P-256 key pair in the TPM, bound to the site's RP ID
 3. Fingerprint verification confirms user presence
-4. The public key and attestation are returned to the browser
+4. The public key and a none attestation statement are returned to the browser
 
 **Authentication (GetAssertion):**
 1. Browser sends a WebAuthn get request with credential IDs
@@ -239,7 +183,7 @@ Ubuntu ships Chromium and Firefox as snap packages, which run in a confined sand
 - **Device cgroup** access is granted via custom udev rules that tag the virtual hidraw device with `snap_chromium_chromium` and `snap_firefox_firefox`
 - The `u2f-devices` snap interface may need to be connected for sysfs descriptor access
 
-The installer handles all of this automatically.
+The package installs the required udev rules. The `u2f-devices` snap interface may still need to be connected manually.
 
 ## Troubleshooting
 
@@ -251,14 +195,16 @@ The installer handles all of this automatically.
 
 ### "Permission denied" on /dev/tpmrm0
 ```bash
-sudo usermod -aG tss $USER
-# Log out and back in
+sudo udevadm control --reload-rules
+sudo udevadm trigger --subsystem-match=tpmrm
+# Log out and back in if the active session ACL is still missing
 ```
 
 ### "Permission denied" on /dev/uhid
 ```bash
-sudo usermod -aG plugdev $USER
-# Log out and back in
+sudo udevadm control --reload-rules
+sudo udevadm trigger --subsystem-match=misc
+# Log out and back in if the active session ACL is still missing
 ```
 
 ### Fingerprint prompt doesn't appear

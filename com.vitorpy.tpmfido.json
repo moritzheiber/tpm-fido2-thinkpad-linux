@@ -1,9 +1,0 @@
-{
-  "name": "com.vitorpy.tpmfido",
-  "description": "TPM-FIDO WebAuthn Platform Authenticator with PRF support",
-  "path": "__HOME__/bin/tpm-fido",
-  "type": "stdio",
-  "allowed_origins": [
-    "chrome-extension://bfmfknknibchmioeamgbnlpakcjimnbf/"
-  ]
-}

@@ -1,17 +1,15 @@
-.TH TPM-FIDO 1 "2026-08-31" "tpm-fido" "User Commands"
+.TH TPM-FIDO 1 "2026-09-08" "tpm-fido" "User Commands"
 .SH NAME
 tpm-fido \- virtual FIDO2 security key backed by TPM 2.0 and a fingerprint reader
 .SH SYNOPSIS
 .B tpm-fido
-.RB [ \-\-mode=\fImode\fR ]
-.RB [ \-\-backend=\fIbackend\fR ]
 .RB [ \-\-device=\fIpath\fR ]
 .RB [ \-\-tray ]
 .RB [ \-\-auto\-switch=\fIbool\fR ]
 .SH DESCRIPTION
 .B tpm-fido
-is a FIDO2/WebAuthn authenticator for Linux. In daemon mode it creates a
-virtual FIDO2 HID device through
+is a FIDO2/WebAuthn authenticator for Linux. It creates a virtual FIDO2 HID
+device through
 .I /dev/uhid
 that browsers use like a hardware security key.
 .PP
@@ -21,29 +19,12 @@ user session, so fingerprint verification and desktop notifications use the
 logged-in user's own session.
 .SH OPTIONS
 .TP
-.BI \-\-mode= mode
-Operating mode.
-.B daemon
-creates the virtual HID device.
-.B native
-runs as a Chrome Native Messaging host. The default is
-.BR native .
-.TP
-.BI \-\-backend= backend
-Signing backend.
-.B tpm
-uses the TPM.
-.B memory
-uses an in-memory key for testing only. The default is
-.BR tpm .
-.TP
 .BI \-\-device= path
 TPM device path. The default is
 .IR /dev/tpmrm0 .
 .TP
 .B \-\-tray
-Show a system tray icon for toggling the virtual device on and off. Daemon
-mode only.
+Show a system tray icon for toggling the virtual device on and off.
 .TP
 .BI \-\-auto\-switch= bool
 Automatically disable the virtual key while a YubiKey is plugged in. Tray mode
@@ -60,7 +41,6 @@ Kernel interface used to create the virtual HID device.
 .I ~/.local/share/tpm-fido/credentials.json
 Resident credential metadata. Private keys remain in the TPM.
 .SH SEE ALSO
-.BR fprintd\-verify (1),
 .BR fprintd\-enroll (1)
 .SH AUTHOR
 Peter Sanford and contributors.

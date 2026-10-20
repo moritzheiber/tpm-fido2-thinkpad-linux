@@ -5,6 +5,8 @@ case "$1" in
   remove|purge)
     if [ -d /run/udev ] && command -v udevadm >/dev/null 2>&1; then
       udevadm control --reload-rules || true
+      udevadm trigger --subsystem-match=misc --action=change || true
+      udevadm trigger --subsystem-match=tpmrm --action=change || true
     fi
     ;;
 esac

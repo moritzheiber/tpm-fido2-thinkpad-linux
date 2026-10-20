@@ -24,6 +24,9 @@ Files: desktopnotify/*
  fprintd/*
  auto_switch.go
  auto_switch_test.go
+ ctap2/handler_test.go
+ ctap2/prompts.go
+ ctap2/storage_test.go
  internal/uhid/*
  packaging/*
  fidohid/lifecycle_test.go
@@ -37,6 +40,14 @@ Copyright: 2026 Moritz Heiber
 License: Expat
 
 Files: fidohid/fidohid.go
+ ctap2/commands.go
+ ctap2/ctap2.go
+ ctap2/getassertion.go
+ ctap2/getinfo.go
+ ctap2/hmacsecret.go
+ ctap2/makecredential.go
+ ctap2/storage.go
+ ctap2/types.go
  tpmfido.go
  tray/tray.go
  userpresence/userpresence.go

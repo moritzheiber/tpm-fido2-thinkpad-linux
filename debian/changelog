@@ -1,4 +1,4 @@
-tpm-fido (0.0~git20260907.1) resolute; urgency=medium
+tpm-fido (0.0~git20260908) resolute; urgency=medium
 
   * Replace the external UHID library with a cancellable native transport.
   * Close device resources on failed startup and serialize daemon shutdown.
@@ -8,8 +8,17 @@ tpm-fido (0.0~git20260907.1) resolute; urgency=medium
   * Bound fprintd cleanup calls and handle closed signal streams.
   * Add conservative service memory, task, and file descriptor limits.
   * Update maintained repository links to the fork.
+  * Use none attestation for the uncertified CTAP2 authenticator.
+  * Include relying-party identity in fingerprint prompts.
+  * Add handler-level CTAP2 behavior and canonical encoding tests.
+  * Grant device access through logind uaccess ACLs.
+  * Harden the user service with filesystem, network, namespace, process,
+    kernel, capability, syscall architecture, and device restrictions.
+  * Remove Native Messaging, legacy installers, distribution tarballs, and
+    the production memory backend.
+  * Remove native-only CTAP adapters and unused credential metadata.
 
- -- Moritz Heiber <moritzheiber@github.com>  Mon, 07 Sep 2026 13:43:02 +0000
+ -- Moritz Heiber <moritzheiber@github.com>  Tue, 08 Sep 2026 09:15:05 +0000
 
 tpm-fido (0.0~git20260304) resolute; urgency=medium
 
