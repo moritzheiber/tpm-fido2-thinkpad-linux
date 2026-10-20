@@ -29,6 +29,10 @@ const (
 
 	sigVerifyStatus = deviceIface + ".VerifyStatus"
 
+	// errNoSuchDevice is the D-Bus error fprintd returns from GetDefaultDevice
+	// when no reader is present.
+	errNoSuchDevice = "net.reactivated.Fprint.Error.NoSuchDevice"
+
 	noMatchHint    = "Fingerprint not recognized. Touch the sensor again."
 	cleanupTimeout = 2 * time.Second
 )
@@ -164,7 +168,7 @@ func (c *Client) Verify(ctx context.Context, username string, onRetry func(hint 
 	var devPath dbus.ObjectPath
 	manager := c.conn.Object(busName, managerPath)
 	if err := manager.CallWithContext(ctx, managerIface+".GetDefaultDevice", 0).Store(&devPath); err != nil {
-		return fmt.Errorf("get default device: %w", err)
+		return managerError(err)
 	}
 	if devPath == "" || devPath == "/" {
 		return ErrNoDevice
@@ -204,6 +208,26 @@ func (c *Client) Verify(ctx context.Context, username string, onRetry func(hint 
 
 	session := &dbusSession{dev: dev, devPath: devPath, sigCh: sigCh}
 	return verify(ctx, session, onRetry)
+}
+
+// HasDevice reports whether fprintd manages at least one fingerprint reader.
+func (c *Client) HasDevice(ctx context.Context) (bool, error) {
+	var devices []dbus.ObjectPath
+	manager := c.conn.Object(busName, managerPath)
+	if err := manager.CallWithContext(ctx, managerIface+".GetDevices", 0).Store(&devices); err != nil {
+		return false, fmt.Errorf("get devices: %w", err)
+	}
+	return len(devices) > 0, nil
+}
+
+// managerError maps the fprintd "no such device" error to ErrNoDevice and
+// wraps anything else.
+func managerError(err error) error {
+	var dbusErr dbus.Error
+	if errors.As(err, &dbusErr) && dbusErr.Name == errNoSuchDevice {
+		return ErrNoDevice
+	}
+	return fmt.Errorf("get default device: %w", err)
 }
 
 // dbusSession implements verifySession against a claimed fprintd device.

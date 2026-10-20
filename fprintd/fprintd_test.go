@@ -197,3 +197,19 @@ func TestNilSignalReturnsError(t *testing.T) {
 		t.Fatalf("next error = %v, want %v", err, errSignalStreamClosed)
 	}
 }
+
+func TestManagerErrorMapsNoSuchDevice(t *testing.T) {
+	noDevice := dbus.Error{Name: errNoSuchDevice, Body: []any{"No devices available"}}
+	if err := managerError(noDevice); !errors.Is(err, ErrNoDevice) {
+		t.Fatalf("managerError(NoSuchDevice) = %v, want ErrNoDevice", err)
+	}
+	other := dbus.Error{Name: "org.freedesktop.DBus.Error.ServiceUnknown"}
+	err := managerError(other)
+	if errors.Is(err, ErrNoDevice) {
+		t.Fatal("unrelated D-Bus error must not map to ErrNoDevice")
+	}
+	var got dbus.Error
+	if !errors.As(err, &got) || got.Name != other.Name {
+		t.Fatalf("unrelated error was not wrapped: %v", err)
+	}
+}
